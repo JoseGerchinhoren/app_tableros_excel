@@ -3,6 +3,7 @@ import boto3
 import pandas as pd
 from io import BytesIO
 from datetime import datetime
+import pytz  # Biblioteca para manejar zonas horarias
 from config import cargar_configuracion
 
 # Cargar configuración
@@ -34,8 +35,9 @@ def process_and_upload_excel(file, original_filename):
         csv_buffer = BytesIO()
         df.to_csv(csv_buffer, index=False, encoding="utf-8")
         
-        # Generar un nombre único para el archivo CSV
-        now = datetime.now()
+        # Generar un nombre único para el archivo CSV con horario de Argentina
+        argentina_tz = pytz.timezone("America/Argentina/Buenos_Aires")
+        now = datetime.now(argentina_tz)
         csv_filename = f"{now.strftime('%Y-%m-%d_%H-%M-%S')}_{original_filename.split('.')[0]}.csv"
 
         # Subir el archivo CSV a S3
