@@ -124,7 +124,7 @@ def process_and_upload_excel(file, original_filename):
 
 # Función principal de la aplicación
 def main():
-    st.title("Subir Archivos Excel a S3 con Formato Personalizado")
+    st.title("Gestión de Tableros - Control de Gestión - Grupo Cenoa")
 
     st.header("Sube tu archivo Excel")
     uploaded_file = st.file_uploader("Selecciona un archivo Excel", type=["xlsx"])
