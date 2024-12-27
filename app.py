@@ -124,7 +124,7 @@ def process_and_upload_excel(file, original_filename):
 
 # Función principal de la aplicación
 def main():
-    st.title("Gestión de Tableros - Control de Gestión - Grupo Cenoa")
+    st.title("Gestión de Tableros")
 
     st.header("Sube un Tablero")
     uploaded_file = st.file_uploader("Selecciona un archivo Excel", type=["xlsx"])
