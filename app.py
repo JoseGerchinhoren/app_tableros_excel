@@ -126,7 +126,7 @@ def process_and_upload_excel(file, original_filename):
 def main():
     st.title("Gestión de Tableros - Control de Gestión - Grupo Cenoa")
 
-    st.header("Sube tu archivo Excel")
+    st.header("Sube un Tablero")
     uploaded_file = st.file_uploader("Selecciona un archivo Excel", type=["xlsx"])
 
     if uploaded_file is not None:
