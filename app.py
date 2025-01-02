@@ -61,8 +61,8 @@ def extract_area_cuil_from_columns(sheet_data):
 # Función para contar filas hasta encontrar una vacía
 def count_rows_until_empty(data, column_name="Indicadores de Gestion"):
     try:
-        header_index = data[data.iloc[:, 4] == column_name].index[0]
-        relevant_rows = data.iloc[header_index + 1:, 4]
+        header_index = data[data.iloc[:, 2] == column_name].index[0]
+        relevant_rows = data.iloc[header_index + 1:, 2]
         return relevant_rows.isna().idxmax() - (header_index + 1)
     except Exception as e:
         st.error(f"Error contando filas hasta vacío: {e}")
@@ -71,15 +71,13 @@ def count_rows_until_empty(data, column_name="Indicadores de Gestion"):
 # Función para limpiar y reestructurar datos
 def clean_and_restructure_until_empty(data, area, cuil):
     try:
-        header_row = data[data.iloc[:, 0] == 'Referente Informacion'].index[0]
+        header_row = data[data.iloc[:, 0] == 'Tipo Indicador'].index[0]
         rows_to_process = count_rows_until_empty(data, "Indicadores de Gestion")
 
         data.columns = data.iloc[header_row]
         data = data.iloc[header_row + 1:header_row + 1 + rows_to_process].reset_index(drop=True)
 
         column_mapping = {
-            'Referente Informacion': 'Referente Informacion',
-            'Solicitud de Informacion': 'Solicitud de Informacion',
             'Tipo Indicador': 'Tipo Indicador',
             'Tipo Dato': 'Tipo Dato',
             'Indicadores de Gestion': 'Indicadores de Gestion',
@@ -90,8 +88,6 @@ def clean_and_restructure_until_empty(data, area, cuil):
             'Resultado': 'Resultado',
             '% Logro': '% Logro',
             'Calificación': 'Calificación',
-            'Observacion': 'Observacion',
-            'Vigente': 'Vigente',
             'Ultima Fecha de Actualización': 'Ultima Fecha de Actualización',
             'Lider Revisor': 'Lider Revisor',
             'Comentario': 'Comentario'
@@ -102,10 +98,10 @@ def clean_and_restructure_until_empty(data, area, cuil):
         data['CUIL'] = cuil
 
         desired_columns = [
-            'Área de influencia', 'CUIL', 'Referente Informacion', 'Solicitud de Informacion',
+            'Área de influencia', 'CUIL',
             'Tipo Indicador', 'Tipo Dato', 'Indicadores de Gestion', 'Ponderacion',
             'Objetivo Aceptable (70%)', 'Objetivo Muy Bueno (90%)', 'Objetivo Excelente (120%)',
-            'Resultado', '% Logro', 'Calificación', 'Observacion', 'Vigente',
+            'Resultado', '% Logro', 'Calificación',
             'Ultima Fecha de Actualización', 'Lider Revisor', 'Comentario'
         ]
         return data[desired_columns]
