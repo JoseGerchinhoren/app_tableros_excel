@@ -4,6 +4,7 @@ import pandas as pd
 from io import BytesIO
 from datetime import datetime
 import pytz
+import re
 from config import cargar_configuracion
 
 # Cargar configuración
@@ -25,13 +26,36 @@ def upload_file_to_s3(file, filename):
     except Exception as e:
         st.error(f"Error al subir el archivo a S3: {e}")
 
+# Verificar formato del nombre del archivo
+def validate_filename(filename):
+    pattern = r"^\d{2}-\d{2}-\d{4}\+.+$"
+    return re.match(pattern, filename)
+
+# Verificar formato de la celda A1
+def validate_a1_format(cell_value):
+    if not isinstance(cell_value, str):
+        return False
+    pattern = r"^[^_]+_[^_]+_[0-9]{11}$"
+    return re.match(pattern, cell_value)
+
+# Función para verificar estructura interna de cada hoja
+def verify_sheet_structure(sheet_data, sheet_name):
+    if sheet_data.empty or sheet_data.shape[1] < 1:
+        st.error(f"Error: La hoja '{sheet_name}' está vacía o no tiene suficientes columnas.")
+        return False
+    cell_a1 = sheet_data.iloc[0, 0]
+    if not validate_a1_format(cell_a1):
+        st.error(f"Tablero no aceptado. Formato inválido en la celda A1 en la hoja '{sheet_name}': "
+                 f"Se espera un formato como 'Gerente.Comercial_Jujuy_1234567891', en su lugar fue '{cell_a1}'.")
+        return False
+    return True
+
 # Función para extraer área y CUIL de las columnas
 def extract_area_cuil_from_columns(sheet_data):
-    for col_name in sheet_data.columns:
-        if isinstance(col_name, str) and "_" in col_name:
-            parts = col_name.split("_")
-            if len(parts) >= 3:
-                return parts[1], parts[2]
+    cell_a1 = sheet_data.iloc[0, 0]
+    if validate_a1_format(cell_a1):
+        parts = cell_a1.split("_")
+        return parts[1], parts[2]
     return None, None
 
 # Función para contar filas hasta encontrar una vacía
@@ -93,18 +117,28 @@ def clean_and_restructure_until_empty(data, area, cuil):
 def process_sheets_until_empty(excel_data):
     final_data = pd.DataFrame()
     for sheet_name in excel_data.sheet_names:
-        sheet_data = excel_data.parse(sheet_name)
+        sheet_data = excel_data.parse(sheet_name, header=None)
+        if not verify_sheet_structure(sheet_data, sheet_name):
+            return pd.DataFrame(), False  # Return empty DataFrame and error state
         area, cuil = extract_area_cuil_from_columns(sheet_data)
         if area and cuil:
             processed_data = clean_and_restructure_until_empty(sheet_data, area, cuil)
             final_data = pd.concat([final_data, processed_data], ignore_index=True)
-    return final_data
+    return final_data, True  # Return DataFrame and success state
 
 # Función para procesar y subir el Excel
 def process_and_upload_excel(file, original_filename):
     try:
+        if not validate_filename(original_filename):
+            st.error("El nombre del archivo no cumple con el formato requerido (dd-mm-aaaa+empresa).")
+            return
+
         excel_data = pd.ExcelFile(file)
-        cleaned_df = process_sheets_until_empty(excel_data)
+        cleaned_df, success = process_sheets_until_empty(excel_data)
+
+        if not success:
+            st.error("El archivo contiene errores en su estructura y no se cargará en S3.")
+            return
 
         if cleaned_df.empty:
             st.error("El archivo no tiene datos válidos después de la limpieza.")
