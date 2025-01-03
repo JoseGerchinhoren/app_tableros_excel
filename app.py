@@ -46,17 +46,19 @@ def verify_sheet_structure(sheet_data, sheet_name):
     cell_a1 = sheet_data.iloc[0, 0]
     if not validate_a1_format(cell_a1):
         st.error(f"Tablero no aceptado. Formato inválido en la celda A1 en la hoja '{sheet_name}': "
-                 f"Se espera un formato como 'Gerente.Comercial_Jujuy_1234567891', en su lugar fue '{cell_a1}'.")
+                 f"Se espera un formato como 'Gerente.Comercial_Jujuy_20301508493', en su lugar fue '{cell_a1}'.")
         return False
     return True
 
-# Función para extraer área y CUIL de las columnas
-def extract_area_cuil_from_columns(sheet_data):
-    cell_a1 = sheet_data.iloc[0, 0]
-    if validate_a1_format(cell_a1):
-        parts = cell_a1.split("_")
-        return parts[1], parts[2]
-    return None, None
+# Función para extraer datos de la celda A1
+def extract_data_from_a1(cell_value):
+    if validate_a1_format(cell_value):
+        parts = cell_value.split("_")
+        cargo = parts[0]
+        area = parts[1]
+        cuil = parts[2]
+        return cargo, area, cuil
+    return None, None, None
 
 # Función para contar filas hasta encontrar una vacía
 def count_rows_until_empty(data, column_name="Indicadores de Gestion"):
@@ -69,7 +71,7 @@ def count_rows_until_empty(data, column_name="Indicadores de Gestion"):
         return 0
 
 # Función para limpiar y reestructurar datos
-def clean_and_restructure_until_empty(data, area, cuil):
+def clean_and_restructure_until_empty(data, cargo, area, cuil):
     try:
         header_row = data[data.iloc[:, 0] == 'Tipo Indicador'].index[0]
         rows_to_process = count_rows_until_empty(data, "Indicadores de Gestion")
@@ -94,11 +96,12 @@ def clean_and_restructure_until_empty(data, area, cuil):
         }
         data = data.rename(columns=column_mapping)
 
+        data['Cargo'] = cargo
         data['Área de influencia'] = area
         data['CUIL'] = cuil
 
         desired_columns = [
-            'Área de influencia', 'CUIL',
+            'Cargo', 'Área de influencia', 'CUIL',
             'Tipo Indicador', 'Tipo Dato', 'Indicadores de Gestion', 'Ponderacion',
             'Objetivo Aceptable (70%)', 'Objetivo Muy Bueno (90%)', 'Objetivo Excelente (120%)',
             'Resultado', '% Logro', 'Calificación',
@@ -116,9 +119,10 @@ def process_sheets_until_empty(excel_data):
         sheet_data = excel_data.parse(sheet_name, header=None)
         if not verify_sheet_structure(sheet_data, sheet_name):
             return pd.DataFrame(), False  # Return empty DataFrame and error state
-        area, cuil = extract_area_cuil_from_columns(sheet_data)
-        if area and cuil:
-            processed_data = clean_and_restructure_until_empty(sheet_data, area, cuil)
+        cell_a1 = sheet_data.iloc[0, 0]
+        cargo, area, cuil = extract_data_from_a1(cell_a1)
+        if cargo and area and cuil:
+            processed_data = clean_and_restructure_until_empty(sheet_data, cargo, area, cuil)
             final_data = pd.concat([final_data, processed_data], ignore_index=True)
     return final_data, True  # Return DataFrame and success state
 
