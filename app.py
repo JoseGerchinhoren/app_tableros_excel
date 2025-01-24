@@ -26,6 +26,34 @@ def upload_file_to_s3(file, filename):
     except Exception as e:
         st.error(f"Error al subir el archivo a S3: {e}")
 
+# Función para guardar errores en un archivo log en S3
+def log_error_to_s3(error_message, filename):
+    try:
+        log_filename = "Errores.csv"
+        now = datetime.now()
+        log_entry = pd.DataFrame([{
+            "Fecha": now.strftime('%Y-%m-%d'),
+            "Hora": now.strftime('%H:%M'),
+            "Error": error_message,
+            "NombreArchivo": filename
+        }])
+        
+        # Descargar el archivo log existente si existe
+        try:
+            log_obj = s3.get_object(Bucket=bucket_name, Key=log_filename)
+            log_df = pd.read_csv(BytesIO(log_obj['Body'].read()))
+            log_df = pd.concat([log_df, log_entry], ignore_index=True)
+        except s3.exceptions.NoSuchKey:
+            log_df = log_entry  # Crear un nuevo DataFrame si no existe el archivo
+
+        # Subir el archivo log actualizado
+        csv_buffer = BytesIO()
+        log_df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
+        csv_buffer.seek(0)
+        s3.put_object(Bucket=bucket_name, Key=log_filename, Body=csv_buffer.getvalue())
+    except Exception as e:
+        st.error(f"Error al guardar el log en S3: {e}")
+
 # Verificar formato del nombre del archivo
 def validate_filename(filename):
     pattern = r"^\d{2}-\d{2}-\d{4}\+.+$"
@@ -38,15 +66,32 @@ def validate_a1_format(cell_value):
     pattern = r"^[^_]+_[^_]+_[0-9]{11}$"
     return re.match(pattern, cell_value)
 
+# Verificar columnas requeridas
+def validate_required_columns(data):
+    required_columns = [
+        'Tipo Indicador', 'Tipo Dato', 'Indicadores de Gestion', 'Ponderacion',
+        'Objetivo Aceptable (70%)', 'Objetivo Muy Bueno (90%)', 'Objetivo Excelente (120%)',
+        'Resultado', '% Logro', 'Calificación', 'Ultima Fecha de Actualización',
+        'Lider Revisor', 'Comentario'
+    ]
+    missing_columns = [col for col in required_columns if col not in data.columns]
+    if missing_columns:
+        return False, missing_columns
+    return True, []
+
 # Función para verificar estructura interna de cada hoja
-def verify_sheet_structure(sheet_data, sheet_name):
+def verify_sheet_structure(sheet_data, sheet_name, filename):
     if sheet_data.empty or sheet_data.shape[1] < 1:
-        st.error(f"Error: La hoja '{sheet_name}' está vacía o no tiene suficientes columnas.")
+        error_message = f"Error: La hoja '{sheet_name}' está vacía o no tiene suficientes columnas."
+        st.error(error_message)
+        log_error_to_s3(error_message, filename)
         return False
     cell_a1 = sheet_data.iloc[0, 0]
     if not validate_a1_format(cell_a1):
-        st.error(f"Tablero no aceptado. Formato inválido en la celda A1 en la hoja '{sheet_name}': "
-                 f"Se espera un formato como 'Gerente.Comercial_Jujuy_20301508493', en su lugar fue '{cell_a1}'.")
+        error_message = (f"Tablero no aceptado. Formato inválido en la celda A1 en la hoja '{sheet_name}': "
+                         f"Se espera un formato como 'Gerente.Comercial_Jujuy_20301508493', en su lugar fue '{cell_a1}'.")
+        st.error(error_message)
+        log_error_to_s3(error_message, filename)
         return False
     return True
 
@@ -71,7 +116,7 @@ def count_rows_until_empty(data, column_name="Indicadores de Gestion"):
         return 0
 
 # Función para limpiar y reestructurar datos
-def clean_and_restructure_until_empty(data, cargo, area, cuil):
+def clean_and_restructure_until_empty(data, cargo, area, cuil, filename):
     try:
         header_row = data[data.iloc[:, 0] == 'Tipo Indicador'].index[0]
         rows_to_process = count_rows_until_empty(data, "Indicadores de Gestion")
@@ -96,6 +141,13 @@ def clean_and_restructure_until_empty(data, cargo, area, cuil):
         }
         data = data.rename(columns=column_mapping)
 
+        valid_columns, missing_columns = validate_required_columns(data)
+        if not valid_columns:
+            error_message = f"Error: Faltan las siguientes columnas requeridas: {', '.join(missing_columns)}"
+            st.error(error_message)
+            log_error_to_s3(error_message, filename)
+            return pd.DataFrame()
+
         data['Cargo'] = cargo
         data['Área de influencia'] = area
         data['CUIL'] = cuil
@@ -109,20 +161,24 @@ def clean_and_restructure_until_empty(data, cargo, area, cuil):
         ]
         return data[desired_columns]
     except Exception as e:
-        st.error(f"Error al limpiar y reestructurar: {e}")
+        error_message = f"Error al limpiar y reestructurar: {e}"
+        st.error(error_message)
+        log_error_to_s3(error_message, filename)
         return pd.DataFrame()
 
 # Función para procesar hojas del Excel
-def process_sheets_until_empty(excel_data):
+def process_sheets_until_empty(excel_data, filename):
     final_data = pd.DataFrame()
     for sheet_name in excel_data.sheet_names:
         sheet_data = excel_data.parse(sheet_name, header=None)
-        if not verify_sheet_structure(sheet_data, sheet_name):
+        if not verify_sheet_structure(sheet_data, sheet_name, filename):
             return pd.DataFrame(), False  # Return empty DataFrame and error state
         cell_a1 = sheet_data.iloc[0, 0]
         cargo, area, cuil = extract_data_from_a1(cell_a1)
         if cargo and area and cuil:
-            processed_data = clean_and_restructure_until_empty(sheet_data, cargo, area, cuil)
+            processed_data = clean_and_restructure_until_empty(sheet_data, cargo, area, cuil, filename)
+            if processed_data.empty:
+                return pd.DataFrame(), False  # Return empty DataFrame and error state
             final_data = pd.concat([final_data, processed_data], ignore_index=True)
     return final_data, True  # Return DataFrame and success state
 
@@ -130,18 +186,24 @@ def process_sheets_until_empty(excel_data):
 def process_and_upload_excel(file, original_filename):
     try:
         if not validate_filename(original_filename):
-            st.error("El nombre del archivo no cumple con el formato requerido (dd-mm-aaaa+empresa).")
+            error_message = "El nombre del archivo no cumple con el formato requerido (dd-mm-aaaa+empresa)."
+            st.error(error_message)
+            log_error_to_s3(error_message, original_filename)
             return
 
         excel_data = pd.ExcelFile(file)
-        cleaned_df, success = process_sheets_until_empty(excel_data)
+        cleaned_df, success = process_sheets_until_empty(excel_data, original_filename)
 
         if not success:
-            st.error("El archivo contiene errores en su estructura y no se cargará en S3.")
+            error_message = "El archivo contiene errores en su estructura y no se cargará en S3"
+            st.error(error_message)
+            log_error_to_s3(error_message, original_filename)
             return
 
         if cleaned_df.empty:
-            st.error("El archivo no tiene datos válidos después de la limpieza.")
+            error_message = "El archivo no tiene datos válidos después de la limpieza."
+            st.error(error_message)
+            log_error_to_s3(error_message, original_filename)
             return
 
         csv_buffer = BytesIO()
@@ -154,7 +216,9 @@ def process_and_upload_excel(file, original_filename):
         csv_buffer.seek(0)
         upload_file_to_s3(csv_buffer, csv_filename)
     except Exception as e:
-        st.error(f"Error al procesar el archivo Excel: {e}")
+        error_message = f"Error al procesar el archivo Excel: {e}"
+        st.error(error_message)
+        log_error_to_s3(error_message, original_filename)
 
 # Función principal de la aplicación
 def main():
