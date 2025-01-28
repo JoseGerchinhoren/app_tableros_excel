@@ -79,6 +79,15 @@ def validate_required_columns(data):
         return False, missing_columns
     return True, []
 
+# Función para verificar si hay ponderaciones con 0%
+def validate_ponderacion(data, filename):
+    if (data['Ponderacion'] == 0).any():
+        error_message = "Error: Existen filas con Ponderacion 0%."
+        st.error(error_message)
+        log_error_to_s3(error_message, filename)
+        return False
+    return True
+
 # Función para verificar estructura interna de cada hoja
 def verify_sheet_structure(sheet_data, sheet_name, filename):
     if sheet_data.empty or sheet_data.shape[1] < 1:
@@ -146,6 +155,9 @@ def clean_and_restructure_until_empty(data, cargo, area, cuil, filename):
             error_message = f"Error: Faltan las siguientes columnas requeridas: {', '.join(missing_columns)}"
             st.error(error_message)
             log_error_to_s3(error_message, filename)
+            return pd.DataFrame()
+
+        if not validate_ponderacion(data, filename):
             return pd.DataFrame()
 
         data['Cargo'] = cargo
