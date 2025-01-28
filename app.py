@@ -22,9 +22,9 @@ s3 = boto3.client(
 def upload_file_to_s3(file, filename):
     try:
         s3.upload_fileobj(file, bucket_name, filename)
-        st.success(f"Archivo '{filename}' subido exitosamente a S3.")
+        st.success(f"Archivo '{filename}' subido exitosamente.")
     except Exception as e:
-        st.error(f"Error al subir el archivo a S3: {e}")
+        st.error(f"Error al subir el archivo: {e}")
 
 # Función para guardar errores en un archivo log en S3
 def log_error_to_s3(error_message, filename):
@@ -207,7 +207,7 @@ def process_and_upload_excel(file, original_filename):
         cleaned_df, success = process_sheets_until_empty(excel_data, original_filename)
 
         if not success:
-            error_message = "El archivo contiene errores en su estructura y no se cargará en S3"
+            error_message = "El archivo contiene errores en su estructura y no se cargará"
             st.error(error_message)
             log_error_to_s3(error_message, original_filename)
             return
