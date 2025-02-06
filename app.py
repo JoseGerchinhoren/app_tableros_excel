@@ -19,10 +19,10 @@ s3 = boto3.client(
 )
 
 # Función para cargar un archivo en S3
-def upload_file_to_s3(file, filename):
+def upload_file_to_s3(file, filename, original_filename):
     try:
         s3.upload_fileobj(file, bucket_name, filename)
-        st.success(f"Archivo '{filename}' subido exitosamente.")
+        st.success(f"Archivo '{original_filename}' subido exitosamente.")
     except Exception as e:
         st.error(f"Error al subir el archivo: {e}")
 
@@ -286,7 +286,7 @@ def process_and_upload_excel(file, original_filename):
         csv_filename = f"{now.strftime('%Y-%m-%d_%H-%M-%S')}_{original_filename.split('.')[0]}.csv"
 
         csv_buffer.seek(0)
-        upload_file_to_s3(csv_buffer, csv_filename)
+        upload_file_to_s3(csv_buffer, csv_filename, original_filename)
     except Exception as e:
         error_message = f"Error al procesar el archivo Excel: {e}"
         st.error(error_message)
