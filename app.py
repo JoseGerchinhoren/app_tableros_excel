@@ -142,7 +142,7 @@ def count_rows_until_empty(data, column_name="Indicadores de Gestion"):
         return 0
 
 # Función para limpiar y reestructurar datos
-def clean_and_restructure_until_empty(data, cargo, area, cuil, leader_name, fecha, sucursal, filename):
+def clean_and_restructure_until_empty(data, cargo, area, cuil, leader_name, fecha, sucursal, filename, upload_datetime):
     try:
         header_row = data[data.iloc[:, 0] == 'Tipo Indicador'].index[0]
         rows_to_process = count_rows_until_empty(data, "Indicadores de Gestion")
@@ -189,10 +189,11 @@ def clean_and_restructure_until_empty(data, cargo, area, cuil, leader_name, fech
         data['Nombre Lider'] = leader_name
         data['Fecha_Nombre_Archivo'] = fecha
         data['Sucursal'] = sucursal
+        data['Fecha Horario Subida'] = upload_datetime
 
         desired_columns = [
             'Cargo', 'Área de influencia', 'CUIL', 'Nombre Lider', 'Fecha_Nombre_Archivo', 'Sucursal',
-            'Tipo Indicador', 'Tipo Dato', 'Indicadores de Gestion', 'Ponderacion',
+            'Fecha Horario Subida', 'Tipo Indicador', 'Tipo Dato', 'Indicadores de Gestion', 'Ponderacion',
             'Objetivo Aceptable (70%)', 'Objetivo Muy Bueno (90%)', 'Objetivo Excelente (120%)',
             'Resultado', '% Logro', 'Calificación',
             'Ultima Fecha de Actualización', 'Lider Revisor', 'Comentario'
@@ -204,11 +205,21 @@ def clean_and_restructure_until_empty(data, cargo, area, cuil, leader_name, fech
         log_error_to_s3(error_message, filename)
         return pd.DataFrame()
 
+# Función para verificar si hay CUILs repetidos en diferentes hojas
+def validate_unique_cuils(dataframes):
+    cuils = []
+    for df in dataframes:
+        cuils.extend(df['CUIL'].unique())
+    if len(cuils) != len(set(cuils)):
+        return False
+    return True
+
 # Función para procesar hojas del Excel
-def process_sheets_until_empty(excel_data, filename):
+def process_sheets_until_empty(excel_data, filename, upload_datetime):
     final_data = pd.DataFrame()
     leader_name = extract_leader_name(filename)
     fecha, sucursal = extract_date_and_sucursal(filename)
+    dataframes = []
     for sheet_name in excel_data.sheet_names:
         sheet_data = excel_data.parse(sheet_name, header=None)
         if not verify_sheet_structure(sheet_data, sheet_name, filename):
@@ -216,10 +227,18 @@ def process_sheets_until_empty(excel_data, filename):
         cell_a1 = sheet_data.iloc[0, 0]
         cargo, area, cuil = extract_data_from_a1(cell_a1)
         if cargo and area and cuil:
-            processed_data = clean_and_restructure_until_empty(sheet_data, cargo, area, cuil, leader_name, fecha, sucursal, filename)
+            processed_data = clean_and_restructure_until_empty(sheet_data, cargo, area, cuil, leader_name, fecha, sucursal, filename, upload_datetime)
             if processed_data.empty:
                 return pd.DataFrame(), False  # Return empty DataFrame and error state
+            dataframes.append(processed_data)
             final_data = pd.concat([final_data, processed_data], ignore_index=True)
+    
+    if not validate_unique_cuils(dataframes):
+        error_message = "Error: Existen CUILs repetidos en diferentes hojas del archivo."
+        st.error(error_message)
+        log_error_to_s3(error_message, filename)
+        return pd.DataFrame(), False  # Return empty DataFrame and error state
+
     return final_data, True  # Return DataFrame and success state
 
 # Función para procesar y subir el Excel
@@ -232,7 +251,10 @@ def process_and_upload_excel(file, original_filename):
             return
 
         excel_data = pd.ExcelFile(file)
-        cleaned_df, success = process_sheets_until_empty(excel_data, original_filename)
+        argentina_tz = pytz.timezone("America/Argentina/Buenos_Aires")
+        now = datetime.now(argentina_tz)
+        upload_datetime = now.strftime('%d/%m/%Y_%H:%M:%S')
+        cleaned_df, success = process_sheets_until_empty(excel_data, original_filename, upload_datetime)
 
         if not success:
             error_message = "El archivo contiene errores en su estructura y no se cargará"
@@ -249,8 +271,6 @@ def process_and_upload_excel(file, original_filename):
         csv_buffer = BytesIO()
         cleaned_df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
 
-        argentina_tz = pytz.timezone("America/Argentina/Buenos_Aires")
-        now = datetime.now(argentina_tz)
         csv_filename = f"{now.strftime('%Y-%m-%d_%H-%M-%S')}_{original_filename.split('.')[0]}.csv"
 
         csv_buffer.seek(0)
