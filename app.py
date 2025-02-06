@@ -29,7 +29,7 @@ def upload_file_to_s3(file, filename):
 # Función para guardar errores en un archivo log en S3
 def log_error_to_s3(error_message, filename):
     try:
-        log_filename = "Errores.csv"
+        log_filename = "Errores.txt"
         now = datetime.now()
         log_entry = pd.DataFrame([{
             "Fecha": now.strftime('%Y-%m-%d'),
@@ -56,8 +56,25 @@ def log_error_to_s3(error_message, filename):
 
 # Verificar formato del nombre del archivo
 def validate_filename(filename):
-    pattern = r"^\d{2}-\d{2}-\d{4}\+.+$"
+    pattern = r"^\d{2}-\d{2}-\d{4}\+.+\+.+\.xlsx$"
     return re.match(pattern, filename)
+
+# Extraer el nombre del líder del archivo
+def extract_leader_name(filename):
+    try:
+        return filename.split('+')[-1].replace('.xlsx', '')
+    except IndexError:
+        return None
+
+# Extraer la fecha y la sucursal del archivo
+def extract_date_and_sucursal(filename):
+    try:
+        parts = filename.split('+')
+        fecha = parts[0]
+        sucursal = parts[1]
+        return fecha, sucursal
+    except IndexError:
+        return None, None
 
 # Verificar formato de la celda A1
 def validate_a1_format(cell_value):
@@ -125,10 +142,16 @@ def count_rows_until_empty(data, column_name="Indicadores de Gestion"):
         return 0
 
 # Función para limpiar y reestructurar datos
-def clean_and_restructure_until_empty(data, cargo, area, cuil, filename):
+def clean_and_restructure_until_empty(data, cargo, area, cuil, leader_name, fecha, sucursal, filename):
     try:
         header_row = data[data.iloc[:, 0] == 'Tipo Indicador'].index[0]
         rows_to_process = count_rows_until_empty(data, "Indicadores de Gestion")
+
+        if rows_to_process == 0:
+            error_message = "Error: No se encontraron filas válidas después del encabezado."
+            st.error(error_message)
+            log_error_to_s3(error_message, filename)
+            return pd.DataFrame()
 
         data.columns = data.iloc[header_row]
         data = data.iloc[header_row + 1:header_row + 1 + rows_to_process].reset_index(drop=True)
@@ -163,9 +186,12 @@ def clean_and_restructure_until_empty(data, cargo, area, cuil, filename):
         data['Cargo'] = cargo
         data['Área de influencia'] = area
         data['CUIL'] = cuil
+        data['Nombre Lider'] = leader_name
+        data['Fecha_Nombre_Archivo'] = fecha
+        data['Sucursal'] = sucursal
 
         desired_columns = [
-            'Cargo', 'Área de influencia', 'CUIL',
+            'Cargo', 'Área de influencia', 'CUIL', 'Nombre Lider', 'Fecha_Nombre_Archivo', 'Sucursal',
             'Tipo Indicador', 'Tipo Dato', 'Indicadores de Gestion', 'Ponderacion',
             'Objetivo Aceptable (70%)', 'Objetivo Muy Bueno (90%)', 'Objetivo Excelente (120%)',
             'Resultado', '% Logro', 'Calificación',
@@ -181,6 +207,8 @@ def clean_and_restructure_until_empty(data, cargo, area, cuil, filename):
 # Función para procesar hojas del Excel
 def process_sheets_until_empty(excel_data, filename):
     final_data = pd.DataFrame()
+    leader_name = extract_leader_name(filename)
+    fecha, sucursal = extract_date_and_sucursal(filename)
     for sheet_name in excel_data.sheet_names:
         sheet_data = excel_data.parse(sheet_name, header=None)
         if not verify_sheet_structure(sheet_data, sheet_name, filename):
@@ -188,7 +216,7 @@ def process_sheets_until_empty(excel_data, filename):
         cell_a1 = sheet_data.iloc[0, 0]
         cargo, area, cuil = extract_data_from_a1(cell_a1)
         if cargo and area and cuil:
-            processed_data = clean_and_restructure_until_empty(sheet_data, cargo, area, cuil, filename)
+            processed_data = clean_and_restructure_until_empty(sheet_data, cargo, area, cuil, leader_name, fecha, sucursal, filename)
             if processed_data.empty:
                 return pd.DataFrame(), False  # Return empty DataFrame and error state
             final_data = pd.concat([final_data, processed_data], ignore_index=True)
@@ -198,7 +226,7 @@ def process_sheets_until_empty(excel_data, filename):
 def process_and_upload_excel(file, original_filename):
     try:
         if not validate_filename(original_filename):
-            error_message = "El nombre del archivo no cumple con el formato requerido (dd-mm-aaaa+empresa)."
+            error_message = "El nombre del archivo no cumple con el formato requerido (dd-mm-aaaa+empresa+nombre lider.xlsx)."
             st.error(error_message)
             log_error_to_s3(error_message, original_filename)
             return
@@ -219,7 +247,7 @@ def process_and_upload_excel(file, original_filename):
             return
 
         csv_buffer = BytesIO()
-        cleaned_df.to_csv(csv_buffer, index=False, encoding="utf-8")
+        cleaned_df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
 
         argentina_tz = pytz.timezone("America/Argentina/Buenos_Aires")
         now = datetime.now(argentina_tz)
