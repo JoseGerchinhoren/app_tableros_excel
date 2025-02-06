@@ -105,6 +105,15 @@ def validate_ponderacion(data, filename):
         return False
     return True
 
+# Función para verificar si la suma de la columna Ponderacion es 1
+def validate_ponderacion_sum(data, filename):
+    if data['Ponderacion'].sum() != 1:
+        error_message = "Error: La suma de la columna Ponderacion no es 100%."
+        st.error(error_message)
+        log_error_to_s3(error_message, filename)
+        return False
+    return True
+
 # Función para verificar estructura interna de cada hoja
 def verify_sheet_structure(sheet_data, sheet_name, filename):
     if sheet_data.empty or sheet_data.shape[1] < 1:
@@ -181,6 +190,9 @@ def clean_and_restructure_until_empty(data, cargo, area, cuil, leader_name, fech
             return pd.DataFrame()
 
         if not validate_ponderacion(data, filename):
+            return pd.DataFrame()
+
+        if not validate_ponderacion_sum(data, filename):
             return pd.DataFrame()
 
         data['Cargo'] = cargo
