@@ -106,9 +106,9 @@ def validate_ponderacion(data, filename):
     return True
 
 # Función para verificar si la suma de la columna Ponderacion es 1
-def validate_ponderacion_sum(data, filename):
+def validate_ponderacion_sum(data, filename, sheet_name):
     if data['Ponderacion'].sum() != 1:
-        error_message = "Error: La suma de la columna Ponderacion no es 100%."
+        error_message = f"Error: La suma de la columna Ponderacion en la hoja '{sheet_name}' no es 100%."
         st.error(error_message)
         log_error_to_s3(error_message, filename)
         return False
@@ -151,7 +151,7 @@ def count_rows_until_empty(data, column_name="Indicadores de Gestion"):
         return 0
 
 # Función para limpiar y reestructurar datos
-def clean_and_restructure_until_empty(data, cargo, area, cuil, leader_name, fecha, sucursal, filename, upload_datetime):
+def clean_and_restructure_until_empty(data, cargo, area, cuil, leader_name, fecha, sucursal, filename, upload_datetime, sheet_name):
     try:
         header_row = data[data.iloc[:, 0] == 'Tipo Indicador'].index[0]
         rows_to_process = count_rows_until_empty(data, "Indicadores de Gestion")
@@ -192,7 +192,7 @@ def clean_and_restructure_until_empty(data, cargo, area, cuil, leader_name, fech
         if not validate_ponderacion(data, filename):
             return pd.DataFrame()
 
-        if not validate_ponderacion_sum(data, filename):
+        if not validate_ponderacion_sum(data, filename, sheet_name):
             return pd.DataFrame()
 
         data['Cargo'] = cargo
@@ -239,7 +239,7 @@ def process_sheets_until_empty(excel_data, filename, upload_datetime):
         cell_a1 = sheet_data.iloc[0, 0]
         cargo, area, cuil = extract_data_from_a1(cell_a1)
         if cargo and area and cuil:
-            processed_data = clean_and_restructure_until_empty(sheet_data, cargo, area, cuil, leader_name, fecha, sucursal, filename, upload_datetime)
+            processed_data = clean_and_restructure_until_empty(sheet_data, cargo, area, cuil, leader_name, fecha, sucursal, filename, upload_datetime, sheet_name)
             if processed_data.empty:
                 return pd.DataFrame(), False  # Return empty DataFrame and error state
             dataframes.append(processed_data)
