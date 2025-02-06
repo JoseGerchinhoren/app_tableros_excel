@@ -107,8 +107,9 @@ def validate_ponderacion(data, filename):
 
 # Función para verificar si la suma de la columna Ponderacion es 1
 def validate_ponderacion_sum(data, filename, sheet_name):
-    if data['Ponderacion'].sum() != 1:
-        error_message = f"Error: La suma de la columna Ponderacion en la hoja '{sheet_name}' no es 100%."
+    ponderacion_sum = data['Ponderacion'].sum()
+    if not (0.95 <= ponderacion_sum <= 1.05):
+        error_message = f"Error: La suma de la columna Ponderacion en la hoja '{sheet_name}' es {ponderacion_sum * 100:.2f}%, no es 100%."
         st.error(error_message)
         log_error_to_s3(error_message, filename)
         return False
