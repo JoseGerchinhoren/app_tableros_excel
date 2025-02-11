@@ -292,6 +292,8 @@ def process_and_upload_excel(file, original_filename):
         fecha, _ = extract_date_and_sucursal(original_filename)
         upload_datetime_obj = datetime.strptime(upload_datetime, '%d/%m/%Y_%H:%M:%S')
         tablero_type = determine_tablero_type(fecha, upload_datetime_obj)
+        ajuste_value = "SI" if tablero_type == "Ajuste" else "NO"
+        cleaned_df["Ajuste"] = ajuste_value
 
         if tablero_type == "Ajuste":
             st.warning("El tablero se va a cargar como ajuste, ¿desea guardarlo igualmente?")
