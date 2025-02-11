@@ -122,24 +122,19 @@ def verify_sheet_structure(sheet_data, sheet_name, filename):
         st.error(error_message)
         log_error_to_s3(error_message, filename)
         return False
-    cell_a1 = sheet_data.iloc[0, 0]
-    if not validate_a1_format(cell_a1):
-        error_message = (f"Tablero no aceptado. Formato inválido en la celda A1 en la hoja '{sheet_name}': "
-                         f"Se espera un formato como 'Gerente.Comercial_Jujuy_20301508493', en su lugar fue '{cell_a1}'.")
-        st.error(error_message)
-        log_error_to_s3(error_message, filename)
-        return False
     return True
 
-# Función para extraer datos de la celda A1
-def extract_data_from_a1(cell_value):
-    if validate_a1_format(cell_value):
-        parts = cell_value.split("_")
-        cargo = parts[0]
-        area = parts[1]
-        cuil = parts[2]
-        return cargo, area, cuil
-    return None, None, None
+# Función para extraer datos del formulario
+def extract_data_from_form(sheet_data):
+    try:
+        cargo = sheet_data.iloc[0, 1]
+        cuil = sheet_data.iloc[1, 1]
+        segmento = sheet_data.iloc[2, 1]
+        area_influencia = sheet_data.iloc[3, 1]
+        comision = sheet_data.iloc[4, 1]
+        return cargo, cuil, segmento, area_influencia, comision
+    except IndexError:
+        return None, None, None, None, None
 
 # Función para contar filas hasta encontrar una vacía
 def count_rows_until_empty(data, column_name="Indicadores de Gestion"):
@@ -152,7 +147,7 @@ def count_rows_until_empty(data, column_name="Indicadores de Gestion"):
         return 0
 
 # Función para limpiar y reestructurar datos
-def clean_and_restructure_until_empty(data, cargo, area, cuil, leader_name, fecha, sucursal, filename, upload_datetime, sheet_name):
+def clean_and_restructure_until_empty(data, cargo, cuil, segmento, area_influencia, comision, leader_name, fecha, sucursal, filename, upload_datetime, sheet_name):
     try:
         header_row = data[data.iloc[:, 0] == 'Tipo Indicador'].index[0]
         rows_to_process = count_rows_until_empty(data, "Indicadores de Gestion")
@@ -197,15 +192,17 @@ def clean_and_restructure_until_empty(data, cargo, area, cuil, leader_name, fech
             return pd.DataFrame()
 
         data['Cargo'] = cargo
-        data['Área de influencia'] = area
         data['CUIL'] = cuil
+        data['Segmento'] = segmento
+        data['Área de influencia'] = area_influencia
+        data['Comisión'] = comision
         data['Nombre Lider'] = leader_name
         data['Fecha_Nombre_Archivo'] = fecha
         data['Sucursal'] = sucursal
         data['Fecha Horario Subida'] = upload_datetime
 
         desired_columns = [
-            'Cargo', 'Área de influencia', 'CUIL', 'Nombre Lider', 'Fecha_Nombre_Archivo', 'Sucursal',
+            'Cargo', 'CUIL', 'Segmento', 'Área de influencia', 'Comisión', 'Nombre Lider', 'Fecha_Nombre_Archivo', 'Sucursal',
             'Fecha Horario Subida', 'Tipo Indicador', 'Tipo Dato', 'Indicadores de Gestion', 'Ponderacion',
             'Objetivo Aceptable (70%)', 'Objetivo Muy Bueno (90%)', 'Objetivo Excelente (120%)',
             'Resultado', '% Logro', 'Calificación',
@@ -237,10 +234,9 @@ def process_sheets_until_empty(excel_data, filename, upload_datetime):
         sheet_data = excel_data.parse(sheet_name, header=None)
         if not verify_sheet_structure(sheet_data, sheet_name, filename):
             return pd.DataFrame(), False  # Return empty DataFrame and error state
-        cell_a1 = sheet_data.iloc[0, 0]
-        cargo, area, cuil = extract_data_from_a1(cell_a1)
-        if cargo and area and cuil:
-            processed_data = clean_and_restructure_until_empty(sheet_data, cargo, area, cuil, leader_name, fecha, sucursal, filename, upload_datetime, sheet_name)
+        cargo, cuil, segmento, area_influencia, comision = extract_data_from_form(sheet_data)
+        if cargo and cuil and segmento and area_influencia and comision:
+            processed_data = clean_and_restructure_until_empty(sheet_data, cargo, cuil, segmento, area_influencia, comision, leader_name, fecha, sucursal, filename, upload_datetime, sheet_name)
             if processed_data.empty:
                 return pd.DataFrame(), False  # Return empty DataFrame and error state
             dataframes.append(processed_data)
