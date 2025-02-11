@@ -2,7 +2,7 @@ import streamlit as st
 import boto3
 import pandas as pd
 from io import BytesIO
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import re
 from config import cargar_configuracion
@@ -254,6 +254,14 @@ def process_sheets_until_empty(excel_data, filename, upload_datetime):
 
     return final_data, True  # Return DataFrame and success state
 
+# Función para determinar si el tablero es "Ajuste" o "Normal"
+def determine_tablero_type(fecha, upload_datetime):
+    fecha_tablero = datetime.strptime(fecha, '%d-%m-%Y')
+    limite_normal = fecha_tablero + timedelta(days=50)  # 20 días del mes siguiente
+    if upload_datetime > limite_normal:
+        return "Ajuste"
+    return "Normal"
+
 # Función para procesar y subir el Excel
 def process_and_upload_excel(file, original_filename):
     try:
@@ -280,6 +288,20 @@ def process_and_upload_excel(file, original_filename):
             st.error(error_message)
             log_error_to_s3(error_message, original_filename)
             return
+
+        fecha, _ = extract_date_and_sucursal(original_filename)
+        upload_datetime_obj = datetime.strptime(upload_datetime, '%d/%m/%Y_%H:%M:%S')
+        tablero_type = determine_tablero_type(fecha, upload_datetime_obj)
+
+        if tablero_type == "Ajuste":
+            st.warning("El tablero se va a cargar como ajuste, ¿desea guardarlo igualmente?")
+            guardar = st.button("Guardar")
+            cancelar = st.button("Cancelar")
+            if cancelar:
+                st.info("El archivo no se guardó.")
+                return
+            if not guardar:
+                return
 
         csv_buffer = BytesIO()
         cleaned_df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
