@@ -149,9 +149,14 @@ def extract_data_from_form(sheet_data):
         cuil = sheet_data.iloc[1, 1]
         segmento = sheet_data.iloc[2, 1]
         area_influencia = sheet_data.iloc[3, 1]
-        return cargo, cuil, segmento, area_influencia
+        comisiones_accesorias = sheet_data.iloc[0, 10]
+        hs_extras_50 = sheet_data.iloc[1, 10]
+        hs_extras_100 = sheet_data.iloc[2, 10]
+        incentivo_productividad = sheet_data.iloc[3, 10]
+        ajuste_incentivo = sheet_data.iloc[4, 10]
+        return cargo, cuil, segmento, area_influencia, comisiones_accesorias, hs_extras_50, hs_extras_100, incentivo_productividad, ajuste_incentivo
     except IndexError:
-        return None, None, None, None, None
+        return None, None, None, None, None, None, None, None, None
 
 # Función para contar filas hasta encontrar una vacía
 def count_rows_until_empty(data, column_name="Indicadores de Gestion"):
@@ -164,7 +169,7 @@ def count_rows_until_empty(data, column_name="Indicadores de Gestion"):
         return 0
 
 # Función para limpiar y reestructurar datos
-def clean_and_restructure_until_empty(data, cargo, cuil, segmento, area_influencia, leader_name, fecha, sucursal, filename, upload_datetime, sheet_name):
+def clean_and_restructure_until_empty(data, cargo, cuil, segmento, area_influencia, leader_name, fecha, sucursal, filename, upload_datetime, sheet_name, comisiones_accesorias, hs_extras_50, hs_extras_100, incentivo_productividad, ajuste_incentivo):
     try:
         header_row = data[data.iloc[:, 0] == 'Tipo Indicador'].index[0]
         rows_to_process = count_rows_until_empty(data, "Indicadores de Gestion")
@@ -216,13 +221,19 @@ def clean_and_restructure_until_empty(data, cargo, cuil, segmento, area_influenc
         data['Fecha_Nombre_Archivo'] = fecha
         data['Sucursal'] = sucursal
         data['Fecha Horario Subida'] = upload_datetime
+        data['COMISIONES ACCESORIAS'] = comisiones_accesorias
+        data['HS EXTRAS AL 50'] = hs_extras_50
+        data['HS EXTRAS AL 100'] = hs_extras_100
+        data['INCENTIVO PRODUCTIVIDAD'] = incentivo_productividad
+        data['AJUSTE INCENTIVO'] = ajuste_incentivo
 
         desired_columns = [
             'Cargo', 'CUIL', 'Segmento', 'Área de influencia', 'Nombre Lider', 'Fecha_Nombre_Archivo', 'Sucursal',
             'Fecha Horario Subida', 'Tipo Indicador', 'Tipo Dato', 'Indicadores de Gestion', 'Ponderacion',
             'Objetivo Aceptable (70%)', 'Objetivo Muy Bueno (90%)', 'Objetivo Excelente (120%)',
             'Resultado', '% Logro', 'Calificación',
-            'Ultima Fecha de Actualización', 'Lider Revisor', 'Comentario'
+            'Ultima Fecha de Actualización', 'Lider Revisor', 'Comentario',
+            'COMISIONES ACCESORIAS', 'HS EXTRAS AL 50', 'HS EXTRAS AL 100', 'INCENTIVO PRODUCTIVIDAD', 'AJUSTE INCENTIVO'
         ]
         return data[desired_columns]
     except Exception as e:
@@ -252,9 +263,9 @@ def process_sheets_until_empty(excel_data, filename, upload_datetime):
             return pd.DataFrame(), False  # Return empty DataFrame and error state
         if not validate_form_cells(sheet_data, sheet_name, filename):
             return pd.DataFrame(), False  # Return empty DataFrame and error state
-        cargo, cuil, segmento, area_influencia = extract_data_from_form(sheet_data)
+        cargo, cuil, segmento, area_influencia, comisiones_accesorias, hs_extras_50, hs_extras_100, incentivo_productividad, ajuste_incentivo = extract_data_from_form(sheet_data)
         if cargo and cuil and segmento and area_influencia:
-            processed_data = clean_and_restructure_until_empty(sheet_data, cargo, cuil, segmento, area_influencia, leader_name, fecha, sucursal, filename, upload_datetime, sheet_name)
+            processed_data = clean_and_restructure_until_empty(sheet_data, cargo, cuil, segmento, area_influencia, leader_name, fecha, sucursal, filename, upload_datetime, sheet_name, comisiones_accesorias, hs_extras_50, hs_extras_100, incentivo_productividad, ajuste_incentivo)
             if processed_data.empty:
                 return pd.DataFrame(), False  # Return empty DataFrame and error state
             dataframes.append(processed_data)
