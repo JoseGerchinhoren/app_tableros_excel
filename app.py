@@ -76,65 +76,30 @@ def extract_date_and_sucursal(filename):
     except IndexError:
         return None, None
 
-# Verificar formato de la celda A1
-def validate_a1_format(cell_value):
-    if not isinstance(cell_value, str):
-        return False
-    pattern = r"^[^_]+_[^_]+_[0-9]{11}$"
-    return re.match(pattern, cell_value)
-
-# Verificar columnas requeridas
-def validate_required_columns(data):
-    required_columns = [
-        'Tipo Indicador', 'Tipo Dato', 'Indicadores de Gestion', 'Ponderacion',
-        'Objetivo Aceptable (70%)', 'Objetivo Muy Bueno (90%)', 'Objetivo Excelente (120%)',
-        'Resultado', '% Logro', 'Calificación', 'Ultima Fecha de Actualización',
-        'Lider Revisor', 'Comentario'
-    ]
-    missing_columns = [col for col in required_columns if col not in data.columns]
-    if missing_columns:
-        return False, missing_columns
-    return True, []
-
-# Función para verificar si hay ponderaciones con 0%
-def validate_ponderacion(data, filename):
-    if (data['Ponderacion'] == 0).any():
-        error_message = "Error: Existen filas con Ponderacion 0%."
-        st.error(error_message)
-        log_error_to_s3(error_message, filename)
-        return False
-    return True
-
-# Función para verificar si la suma de la columna Ponderacion es 1
-def validate_ponderacion_sum(data, filename, sheet_name):
-    ponderacion_sum = data['Ponderacion'].sum()
-    if not (0.99 <= ponderacion_sum <= 1.1):
-        error_message = f"Error: La suma de la columna Ponderacion en la hoja '{sheet_name}' es {ponderacion_sum * 100:.2f}%, no es 100%."
-        st.error(error_message)
-        log_error_to_s3(error_message, filename)
-        return False
-    return True
-
-# Función para verificar estructura interna de cada hoja
-def verify_sheet_structure(sheet_data, sheet_name, filename):
-    if sheet_data.empty or sheet_data.shape[1] < 1:
-        error_message = f"Error: La hoja '{sheet_name}' está vacía o no tiene suficientes columnas."
-        st.error(error_message)
-        log_error_to_s3(error_message, filename)
-        return False
-    return True
-
-# Función para extraer datos del formulario
-def extract_data_from_form(sheet_data):
+# Verificar celdas del formulario
+def validate_form_cells(sheet_data, sheet_name, filename):
     try:
-        cargo = sheet_data.iloc[0, 1]
-        cuil = sheet_data.iloc[1, 1]
-        segmento = sheet_data.iloc[2, 1]
-        area_influencia = sheet_data.iloc[3, 1]
-        comision = sheet_data.iloc[4, 1]
-        return cargo, cuil, segmento, area_influencia, comision
-    except IndexError:
-        return None, None, None, None, None
+        required_cells = ['B1', 'B2', 'B3', 'B4', 'B5']
+        for cell in required_cells:
+            if pd.isna(sheet_data.at[int(cell[1])-1, 1]):
+                error_message = f"Error: La celda {cell} en la hoja '{sheet_name}' está vacía."
+                st.error(error_message)
+                log_error_to_s3(error_message, filename)
+                return False
+
+        cuil = str(sheet_data.at[1, 1])
+        if not re.match(r"^\d{11}$", cuil):
+            error_message = f"Error: La celda B2 en la hoja '{sheet_name}' debe contener 11 números."
+            st.error(error_message)
+            log_error_to_s3(error_message, filename)
+            return False
+
+        return True
+    except Exception as e:
+        error_message = f"Error al validar las celdas del formulario en la hoja '{sheet_name}': {e}"
+        st.error(error_message)
+        log_error_to_s3(error_message, filename)
+        return False
 
 # Función para contar filas hasta encontrar una vacía
 def count_rows_until_empty(data, column_name="Indicadores de Gestion"):
@@ -233,6 +198,8 @@ def process_sheets_until_empty(excel_data, filename, upload_datetime):
     for sheet_name in excel_data.sheet_names:
         sheet_data = excel_data.parse(sheet_name, header=None)
         if not verify_sheet_structure(sheet_data, sheet_name, filename):
+            return pd.DataFrame(), False  # Return empty DataFrame and error state
+        if not validate_form_cells(sheet_data, sheet_name, filename):
             return pd.DataFrame(), False  # Return empty DataFrame and error state
         cargo, cuil, segmento, area_influencia, comision = extract_data_from_form(sheet_data)
         if cargo and cuil and segmento and area_influencia and comision:
