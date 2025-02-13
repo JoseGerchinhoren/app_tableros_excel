@@ -314,6 +314,10 @@ def process_and_upload_excel(file, original_filename):
             log_error_to_s3(error_message, original_filename)
             return
 
+        # Contar la cantidad de CUILs únicos
+        unique_cuils_count = cleaned_df['CUIL'].nunique()
+        st.info(f"Se subieron {unique_cuils_count} tableros.")
+
         fecha, _ = extract_date_and_sucursal(original_filename)
         upload_datetime_obj = datetime.strptime(upload_datetime, '%d/%m/%Y_%H:%M:%S')
         tablero_type = determine_tablero_type(fecha, upload_datetime_obj)
