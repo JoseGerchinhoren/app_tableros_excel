@@ -268,6 +268,8 @@ def process_sheets_until_empty(excel_data, filename, upload_datetime):
             processed_data = clean_and_restructure_until_empty(sheet_data, cargo, cuil, segmento, area_influencia, leader_name, fecha, sucursal, filename, upload_datetime, sheet_name, comisiones_accesorias, hs_extras_50, hs_extras_100, incentivo_productividad, ajuste_incentivo)
             if processed_data.empty:
                 return pd.DataFrame(), False  # Return empty DataFrame and error state
+            if not validate_update_dates(processed_data, filename, sheet_name):
+                return pd.DataFrame(), False  # Return empty DataFrame and error state
             dataframes.append(processed_data)
             final_data = pd.concat([final_data, processed_data], ignore_index=True)
     
@@ -286,6 +288,31 @@ def determine_tablero_type(fecha, upload_datetime):
     if upload_datetime > limite_normal:
         return "Ajuste"
     return "Normal"
+
+# Función para verificar fechas en la columna "Ultima Fecha de Actualización"
+def validate_update_dates(data, filename, sheet_name):
+    try:
+        argentina_tz = pytz.timezone("America/Argentina/Buenos_Aires")
+        now = datetime.now(argentina_tz)
+        now = pd.to_datetime(now.strftime('%Y-%m-%d'))  # Convertir la fecha actual al mismo tipo de datos
+        data['Ultima Fecha de Actualización'] = pd.to_datetime(data['Ultima Fecha de Actualización'], format='%d/%m/%Y', errors='coerce')
+        invalid_dates = data[data['Ultima Fecha de Actualización'] > now]
+        if not invalid_dates.empty:
+            error_message = f"Error: Existen fechas en la columna 'Ultima Fecha de Actualización' en la hoja '{sheet_name}' que son posteriores a la fecha actual."
+            st.error(error_message)
+            log_error_to_s3(error_message, filename)
+            return False
+        return True
+    except KeyError:
+        error_message = f"Error: La columna 'Ultima Fecha de Actualización' no existe en la hoja '{sheet_name}'."
+        st.error(error_message)
+        log_error_to_s3(error_message, filename)
+        return False
+    except Exception as e:
+        error_message = f"Error al validar las fechas en la columna 'Ultima Fecha de Actualización' en la hoja '{sheet_name}': {e}"
+        st.error(error_message)
+        log_error_to_s3(error_message, filename)
+        return False
 
 # Función para procesar y subir el Excel
 def process_and_upload_excel(file, original_filename):
