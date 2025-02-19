@@ -59,6 +59,28 @@ def validate_filename(filename):
     pattern = r"^\d{2}-\d{2}-\d{4}\+.+\+.+\.xlsx$"
     return re.match(pattern, filename)
 
+# Función para validar la fecha del archivo
+def validate_file_date(filename):
+    try:
+        file_date_str = filename.split('+')[0]
+        file_date = datetime.strptime(file_date_str, '%d-%m-%Y')
+        now = datetime.now()
+        current_month = now.month
+        current_year = now.year
+
+        # Check if the file date is from the current month, more than two months prior, or a future month
+        if (file_date.year == current_year and file_date.month == current_month) or \
+           (file_date.year == current_year and file_date.month > current_month) or \
+           (file_date.year > current_year) or \
+           (file_date.year == current_year and file_date.month < current_month - 2) or \
+           (file_date.year == current_year - 1 and current_month in [1, 2] and file_date.month < 12 - (2 - current_month)):
+            return False
+
+        return True
+    except Exception as e:
+        st.error(f"Error al validar la fecha del archivo: {e}")
+        return False
+
 # Extraer el nombre del líder del archivo
 def extract_leader_name(filename):
     try:
@@ -319,6 +341,12 @@ def process_and_upload_excel(file, original_filename):
     try:
         if not validate_filename(original_filename):
             error_message = "El nombre del archivo no cumple con el formato requerido (dd-mm-aaaa+empresa+nombre lider.xlsx)."
+            st.error(error_message)
+            log_error_to_s3(error_message, original_filename)
+            return
+
+        if not validate_file_date(original_filename):
+            error_message = "El archivo no puede ser del mes actual ni de los dos meses anteriores."
             st.error(error_message)
             log_error_to_s3(error_message, original_filename)
             return
