@@ -72,8 +72,8 @@ def validate_file_date(filename):
         if (file_date.year == current_year and file_date.month == current_month) or \
            (file_date.year == current_year and file_date.month > current_month) or \
            (file_date.year > current_year) or \
-           (file_date.year == current_year and file_date.month < current_month - 2) or \
-           (file_date.year == current_year - 1 and current_month in [1, 2] and file_date.month < 12 - (2 - current_month)):
+           (file_date.year == current_year and file_date.month < current_month - 1) or \
+           (file_date.year == current_year - 1 and current_month in [1, 2] and file_date.month < 12 - (1 - current_month)):
             return False
 
         return True
@@ -306,8 +306,8 @@ def process_sheets_until_empty(excel_data, filename, upload_datetime):
 # Función para determinar si el tablero es "Ajuste" o "Normal"
 def determine_tablero_type(fecha, upload_datetime):
     fecha_tablero = datetime.strptime(fecha, '%d-%m-%Y')
-    limite_normal = fecha_tablero + timedelta(days=50)  # 20 días del mes siguiente
-    if upload_datetime > limite_normal:
+    ajuste_fecha = datetime.strptime('21/02/2025', '%d/%m/%Y')  # Ingresar la fecha de ajuste aquí
+    if upload_datetime > ajuste_fecha:
         return "Ajuste"
     return "Normal"
 
