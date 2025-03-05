@@ -306,7 +306,7 @@ def process_sheets_until_empty(excel_data, filename, upload_datetime):
 # Función para determinar si el tablero es "Ajuste" o "Normal"
 def determine_tablero_type(fecha, upload_datetime):
     fecha_tablero = datetime.strptime(fecha, '%d-%m-%Y')
-    ajuste_fecha = datetime.strptime('21/02/2025', '%d/%m/%Y')  # Ingresar la fecha de ajuste aquí
+    ajuste_fecha = datetime.strptime('27/02/2025', '%d/%m/%Y')  # Ingresar la fecha de ajuste aquí
     if upload_datetime > ajuste_fecha:
         return "Ajuste"
     return "Normal"
@@ -336,6 +336,29 @@ def validate_update_dates(data, filename, sheet_name):
         log_error_to_s3(error_message, filename)
         return False
 
+# Función para verificar duplicados en S3
+def check_for_duplicates(cuil, fecha, leader_name):
+    try:
+        cuil = str(cuil)
+        fecha = str(fecha)
+        response = s3.list_objects_v2(Bucket=bucket_name)
+        if 'Contents' in response:
+            for obj in response['Contents']:
+                obj_key = obj['Key']
+                obj_data = s3.get_object(Bucket=bucket_name, Key=obj_key)
+                df = pd.read_csv(BytesIO(obj_data['Body'].read()))
+                if 'CUIL' in df.columns and 'Fecha_Nombre_Archivo' in df.columns:
+                    df['CUIL'] = df['CUIL'].astype(str)
+                    df['Fecha_Nombre_Archivo'] = df['Fecha_Nombre_Archivo'].astype(str)
+                    if not df.empty and df['CUIL'].str.contains(cuil).any() and df['Fecha_Nombre_Archivo'].str.contains(fecha).any():
+                        existing_leader = df.loc[df['CUIL'] == cuil, 'Nombre Lider'].values[0]
+                        if existing_leader != leader_name:
+                            return True, existing_leader, cuil  # Block upload if the leader is different
+        return False, None, None
+    except Exception as e:
+        st.error(f"Error al verificar duplicados en S3: {e}")
+        return False, None, None
+
 # Función para procesar y subir el Excel
 def process_and_upload_excel(file, original_filename):
     try:
@@ -346,7 +369,7 @@ def process_and_upload_excel(file, original_filename):
             return
 
         if not validate_file_date(original_filename):
-            error_message = "El archivo no puede ser del mes actual ni de los dos meses anteriores."
+            error_message = "La fecha del nombre del archivo solo puede ser del mes anterior al actual."
             st.error(error_message)
             log_error_to_s3(error_message, original_filename)
             return
@@ -369,11 +392,21 @@ def process_and_upload_excel(file, original_filename):
             log_error_to_s3(error_message, original_filename)
             return
 
+        # Verificar duplicados
+        cuil = cleaned_df['CUIL'].iloc[0]
+        fecha, _ = extract_date_and_sucursal(original_filename)
+        leader_name = cleaned_df['Nombre Lider'].iloc[0]
+        is_duplicate, existing_leader, duplicate_cuil = check_for_duplicates(cuil, fecha, leader_name)
+        if is_duplicate:
+            error_message = f"No se puede subir el archivo porque el líder '{existing_leader}' ya lo subió anteriormente. El CUIL duplicado es '{duplicate_cuil}'."
+            st.error(error_message)
+            log_error_to_s3(error_message, original_filename)
+            return
+
         # Contar la cantidad de CUILs únicos
         unique_cuils_count = cleaned_df['CUIL'].nunique()
         st.info(f"Se subieron {unique_cuils_count} tableros.")
 
-        fecha, _ = extract_date_and_sucursal(original_filename)
         upload_datetime_obj = datetime.strptime(upload_datetime, '%d/%m/%Y_%H:%M:%S')
         tablero_type = determine_tablero_type(fecha, upload_datetime_obj)
         ajuste_value = "SI" if tablero_type == "Ajuste" else "NO"
