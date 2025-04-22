@@ -27,6 +27,14 @@ def upload_file_to_s3(file, filename, original_filename):
     except Exception as e:
         st.error(f"Error al subir el archivo: {e}")
 
+# Función para cargar un archivo en S3
+def upload_file_to_s3_RRHH(file, filename, original_filename):
+    try:
+        s3.upload_fileobj(file, bucket_name, filename)
+        st.success(f"Tabla de RRHH, del archivo '{original_filename}' subido exitosamente.")
+    except Exception as e:
+        st.error(f"Error al subir el archivo: {e}")
+
 # Función para guardar errores en un archivo log en S3
 def log_error_to_s3(error_message, filename):
     try:
@@ -439,7 +447,7 @@ def validate_resumen_rrhh(sheet_data, filename):
 
         if header_row_index is None:
             st.error("Error: No se encontraron encabezados válidos en la hoja 'Resumen RRHH'.")
-            return False
+            return None  # Retornar None si no se encuentran encabezados
 
         # Leer los encabezados y limpiar espacios
         headers = sheet_data.iloc[header_row_index, :13].apply(lambda x: str(x).strip()).tolist()
@@ -450,19 +458,19 @@ def validate_resumen_rrhh(sheet_data, filename):
             error_message = f"Error: Faltan las siguientes columnas en 'Resumen RRHH': {', '.join(missing_columns)}"
             st.error(error_message)
             log_error_to_s3(error_message, filename)
-            return False
+            return None  # Retornar None si faltan columnas
 
         # Tomar los datos debajo de los encabezados
         data = sheet_data.iloc[header_row_index + 1:, :13]
         data.columns = headers  # Asignar los encabezados a las columnas
 
-        return True
+        return data  # Retornar el DataFrame procesado
     except Exception as e:
         # Agregar más detalles al mensaje de error
         error_message = f"Error al validar 'Resumen RRHH': {e}. Traceback: {traceback.format_exc()}"
         st.error(error_message)
         log_error_to_s3(error_message, filename)
-        return False
+        return None  # Retornar None en caso de error
 
 # Validar hojas de colaboradores
 def validate_colaborador_sheet(sheet_data, sheet_name, filename, empresa, tipo_tablero):
@@ -588,17 +596,17 @@ def process_and_upload_excel(file, original_filename):
             resumen_rrhh_data = excel_data.parse("Resumen RRHH", header=None, decimal=",")  # Leer con coma como separador decimal
 
             # Validar la estructura de la hoja "Resumen RRHH"
-            if not validate_resumen_rrhh(resumen_rrhh_data, original_filename):
+            resumen_rrhh_data = validate_resumen_rrhh(resumen_rrhh_data, original_filename)
+            if resumen_rrhh_data is None:
                 st.error("Error en la hoja 'Resumen RRHH'. No se procesará el archivo.")
                 return  # Detener la ejecución si hay un error
 
             # Guardar la hoja "Resumen RRHH" como un archivo CSV separado
             csv_buffer_rrhh = BytesIO()
-            resumen_rrhh_data.to_csv(csv_buffer_rrhh, index=False, encoding="utf-8-sig")
+            resumen_rrhh_data.to_csv(csv_buffer_rrhh, index=False, encoding="utf-8-sig")  # Guardar sin índices
             csv_filename_rrhh = f"RRHH-{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_{original_filename.split('.')[0]}.csv"
             csv_buffer_rrhh.seek(0)
-            upload_file_to_s3(csv_buffer_rrhh, csv_filename_rrhh, original_filename)
-            st.success(f"Archivo 'Resumen RRHH' procesado y guardado como '{csv_filename_rrhh}'.")
+            upload_file_to_s3_RRHH(csv_buffer_rrhh, csv_filename_rrhh, original_filename)
 
         # Procesar las demás hojas
         final_data = pd.DataFrame()
@@ -643,13 +651,13 @@ def process_and_upload_excel(file, original_filename):
             final_data = pd.concat([final_data, processed_data], ignore_index=True)
 
         # Guardar los datos procesados en un CSV
-        csv_buffer = BytesIO()
-        final_data.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
-        csv_filename = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_{original_filename.split('.')[0]}.csv"
-        csv_buffer.seek(0)
-        upload_file_to_s3(csv_buffer, csv_filename, original_filename)
+        if not final_data.empty:
+            csv_buffer = BytesIO()
+            final_data.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
+            csv_filename = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_{original_filename.split('.')[0]}.csv"
+            csv_buffer.seek(0)
+            upload_file_to_s3(csv_buffer, csv_filename, original_filename)
 
-        st.success("Archivo procesado correctamente.")
     except Exception as e:
         # Manejo de errores
         error_message = f"Error al procesar el archivo Excel: {e}. Traceback: {traceback.format_exc()}"
