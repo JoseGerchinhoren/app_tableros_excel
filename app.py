@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 import pytz
 import re
 from config import cargar_configuracion
-import traceback
 
 # Cargar configuración
 aws_access_key, aws_secret_key, region_name, bucket_name, valid_user, valid_password = cargar_configuracion()
@@ -27,22 +26,6 @@ def upload_file_to_s3(file, filename, original_filename):
     except Exception as e:
         st.error(f"Error al subir el archivo: {e}")
 
-# Función para cargar un archivo en S3
-def upload_file_to_s3_RRHH(file, filename, original_filename):
-    try:
-        s3.upload_fileobj(file, bucket_name, filename)
-        st.success(f"Tabla de RRHH, del archivo '{original_filename}' subido exitosamente.")
-    except Exception as e:
-        st.error(f"Error al subir el archivo: {e}")
-
-# Función para cargar un archivo en S3
-def upload_file_to_s3_Aceleradores(file, filename, original_filename):
-    try:
-        s3.upload_fileobj(file, bucket_name, filename)
-        st.success(f"Tabla de Aceleradores, del archivo '{original_filename}' subido exitosamente.")
-    except Exception as e:
-        st.error(f"Error al subir el archivo: {e}")
-        
 # Función para guardar errores en un archivo log en S3
 def log_error_to_s3(error_message, filename):
     try:
@@ -74,7 +57,9 @@ def log_error_to_s3(error_message, filename):
 # Verificar formato del nombre del archivo
 def validate_filename(filename):
     pattern = r"^\d{2}-\d{2}-\d{4}\+.+\+.+\.xlsx$"
-    return re.match(pattern, filename)
+    if not re.match(pattern, filename):
+        return False
+    return True
 
 # Función para validar la fecha del archivo
 def validate_file_date(filename):
@@ -115,62 +100,36 @@ def extract_date_and_sucursal(filename):
     except IndexError:
         return None, None
 
-# Modificar la función validate_form_cells para que no valide CUIL en tableros de no vendedores
+# Verificar celdas del formulario
 def validate_form_cells(sheet_data, sheet_name, filename, is_vendedores):
     try:
-        required_cells = ['B1', 'B2', 'B3', 'B4']
-        for cell in required_cells:
-            if pd.isna(sheet_data.at[int(cell[1]) - 1, 1]):
-                error_message = f"Error: La celda {cell} en la hoja '{sheet_name}' está vacía."
+        if is_vendedores:
+            # Omitir validación de B1 si la hoja es "Resumen RRHH"
+            if sheet_name == "Resumen RRHH":
+                return True
+
+            # Validar formulario de vendedores
+            if pd.isna(sheet_data.at[0, 1]) or not re.match(r"^\d{11}$", str(sheet_data.at[0, 1])):
+                error_message = f"Error: La celda B1 en la hoja '{sheet_name}' debe contener un CUIL válido (11 dígitos)."
                 st.error(error_message)
                 log_error_to_s3(error_message, filename)
                 return False
+        else:
+            # Validar formulario de no vendedores
+            required_cells = ['B1', 'B2', 'B3', 'B4']
+            for cell in required_cells:
+                if pd.isna(sheet_data.at[int(cell[1]) - 1, 1]):
+                    error_message = f"Error: La celda {cell} en la hoja '{sheet_name}' está vacía."
+                    st.error(error_message)
+                    log_error_to_s3(error_message, filename)
+                    return False
 
-        # Validar CUIL solo si es un tablero de vendedores
-        if is_vendedores:
             cuil = str(sheet_data.at[1, 1])
             if not re.match(r"^\d{11}$", cuil):
                 error_message = f"Error: La celda B2 en la hoja '{sheet_name}' debe contener 11 números."
                 st.error(error_message)
                 log_error_to_s3(error_message, filename)
                 return False
-
-        # Validar que los campos de comisiones y horas extra sean números o nulos
-        comisiones_accesorias = sheet_data.at[0, 10]
-        hs_extras_50 = sheet_data.at[1, 10]
-        hs_extras_100 = sheet_data.at[2, 10]
-        incentivo_productividad = sheet_data.at[3, 10]
-        ajuste_incentivo = sheet_data.at[4, 10]
-
-        if not (pd.isna(comisiones_accesorias) or (isinstance(comisiones_accesorias, (int, float)) and float(comisiones_accesorias).is_integer())):
-            error_message = f"Error: La celda K1 en la hoja '{sheet_name}' debe contener un número entero."
-            st.error(error_message)
-            log_error_to_s3(error_message, filename)
-            return False
-
-        if not (pd.isna(hs_extras_50) or isinstance(hs_extras_50, (int, float))):
-            error_message = f"Error: La celda K2 en la hoja '{sheet_name}' debe contener solo números."
-            st.error(error_message)
-            log_error_to_s3(error_message, filename)
-            return False
-
-        if not (pd.isna(hs_extras_100) or isinstance(hs_extras_100, (int, float))):
-            error_message = f"Error: La celda K3 en la hoja '{sheet_name}' debe contener solo números."
-            st.error(error_message)
-            log_error_to_s3(error_message, filename)
-            return False
-
-        if not (pd.isna(incentivo_productividad) or (isinstance(incentivo_productividad, (int, float)) and float(incentivo_productividad).is_integer())):
-            error_message = f"Error: La celda K4 en la hoja '{sheet_name}' debe contener un número entero."
-            st.error(error_message)
-            log_error_to_s3(error_message, filename)
-            return False
-
-        if not (pd.isna(ajuste_incentivo) or (isinstance(ajuste_incentivo, (int, float)) and float(ajuste_incentivo).is_integer())):
-            error_message = f"Error: La celda K5 en la hoja '{sheet_name}' debe contener un número entero."
-            st.error(error_message)
-            log_error_to_s3(error_message, filename)
-            return False
 
         return True
     except Exception as e:
@@ -329,7 +288,7 @@ def validate_unique_cuils(dataframes):
         return False
     return True
 
-# Modificar la función process_sheets_until_empty para pasar el parámetro is_vendedores
+# Función para procesar hojas del Excel
 def process_sheets_until_empty(excel_data, filename, upload_datetime, is_vendedores):
     final_data = pd.DataFrame()
     leader_name = extract_leader_name(filename)
@@ -339,25 +298,43 @@ def process_sheets_until_empty(excel_data, filename, upload_datetime, is_vendedo
     for sheet_name in excel_data.sheet_names:
         sheet_data = excel_data.parse(sheet_name, header=None)
 
-        # Validar estructura de la hoja
+        # Si es la hoja "Resumen RRHH" y es un tablero de vendedores, solo validar columnas requeridas
+        if is_vendedores and sheet_name == "Resumen RRHH":
+            valid_rrhh, resumen_rrhh_data = validate_resumen_rrhh_sheet(excel_data, filename)
+            if not valid_rrhh:
+                return pd.DataFrame(), False  # Return empty DataFrame and error state
+            save_resumen_rrhh_to_csv(resumen_rrhh_data, filename, upload_datetime)
+            continue  # No procesar más esta hoja
+
         if not verify_sheet_structure(sheet_data, sheet_name, filename):
             return pd.DataFrame(), False  # Return empty DataFrame and error state
+
         if not validate_form_cells(sheet_data, sheet_name, filename, is_vendedores):
             return pd.DataFrame(), False  # Return empty DataFrame and error state
-        cargo, cuil, segmento, area_influencia, comisiones_accesorias, hs_extras_50, hs_extras_100, incentivo_productividad, ajuste_incentivo = extract_data_from_form(sheet_data)
 
-        if cargo and (not is_vendedores or (is_vendedores and cuil)) and segmento and area_influencia:
+        if is_vendedores:
+            processed_data = process_vendedores_tablero(sheet_data, filename, upload_datetime, sheet_name)
+        else:
+            cargo, cuil, segmento, area_influencia, comisiones_accesorias, hs_extras_50, hs_extras_100, incentivo_productividad, ajuste_incentivo = extract_data_from_form(sheet_data)
+            if not all([cargo, cuil, segmento, area_influencia]):
+                error_message = f"Error: El formulario en la hoja '{sheet_name}' no contiene todos los datos requeridos."
+                st.error(error_message)
+                log_error_to_s3(error_message, filename)
+                return pd.DataFrame(), False
+
             processed_data = clean_and_restructure_until_empty(
                 sheet_data, cargo, cuil, segmento, area_influencia, leader_name, fecha, sucursal, filename,
-                upload_datetime, sheet_name, comisiones_accesorias, hs_extras_50, hs_extras_100,
-                incentivo_productividad, ajuste_incentivo
+                upload_datetime, sheet_name, comisiones_accesorias, hs_extras_50, hs_extras_100, incentivo_productividad, ajuste_incentivo
             )
-            if processed_data.empty:
-                return pd.DataFrame(), False  # Return empty DataFrame and error state
-            if not validate_update_dates(processed_data, filename, sheet_name):
-                return pd.DataFrame(), False  # Return empty DataFrame and error state
-            dataframes.append(processed_data)
-            final_data = pd.concat([final_data, processed_data], ignore_index=True)
+
+        if processed_data.empty:
+            return pd.DataFrame(), False  # Return empty DataFrame and error state
+
+        if not validate_update_dates(processed_data, filename, sheet_name):
+            return pd.DataFrame(), False  # Return empty DataFrame and error state
+
+        dataframes.append(processed_data)
+        final_data = pd.concat([final_data, processed_data], ignore_index=True)
 
     if not validate_unique_cuils(dataframes):
         error_message = "Error: Existen CUILs repetidos en diferentes hojas del archivo."
@@ -370,7 +347,7 @@ def process_sheets_until_empty(excel_data, filename, upload_datetime, is_vendedo
 # Función para determinar si el tablero es "Ajuste" o "Normal"
 def determine_tablero_type(fecha, upload_datetime):
     fecha_tablero = datetime.strptime(fecha, '%d-%m-%Y')
-    ajuste_fecha = datetime.strptime('24/04/2025', '%d/%m/%Y')  # Ingresar la fecha de ajuste aquí
+    ajuste_fecha = datetime.strptime('23/04/2025', '%d/%m/%Y')  # Ingresar la fecha de ajuste aquí
     if upload_datetime > ajuste_fecha:
         return "Ajuste"
     return "Normal"
@@ -444,354 +421,191 @@ def check_for_duplicates(cuil, fecha, leader_name):
         st.error(f"Error al verificar duplicados en S3: {e}")
         return False, None, None
 
-# Función para verificar si el archivo es de vendedores
-def is_vendedores_file(filename):
-    """
-    Verifica si el archivo es de vendedores según el nombre del archivo.
-    Un archivo es de vendedores si, después del primer '+', aparece la palabra 'Vendedores'.
-    """
-    try:
-        parts = filename.split('+')
-        if len(parts) > 1 and parts[1].strip().startswith("Vendedores"):
-            return True
-        return False
-    except Exception as e:
-        st.error(f"Error al verificar si el archivo es de vendedores: {e}")
-        return False
-
-# Modificar la función validate_resumen_rrhh
-def validate_resumen_rrhh(sheet_data, filename):
-    required_columns = [
-        "Sucursal", "Vendedores", "CUIT", "LEGAJO", "Total Ventas", "Vta PPAA", "Descuentos PPAA",
-        "COMISION PPAA", "0km", "Usados", "Premio Convencional", "Comision Convencional", "Total a liquidar"
-    ]
-    try:
-        # Buscar la fila que contiene los encabezados
-        header_row_index = None
-        for i in range(len(sheet_data)):
-            row = sheet_data.iloc[i, :13].tolist()  # Tomar las primeras 13 columnas
-            if all(isinstance(cell, str) for cell in row) and all(cell.strip() != "" for cell in row):
-                header_row_index = i
-                break
-
-        if header_row_index is None:
-            st.error("Error: No se encontraron encabezados válidos en la hoja 'Resumen RRHH'.")
-            return None  # Retornar None si no se encuentran encabezados
-
-        # Leer los encabezados y limpiar espacios
-        headers = sheet_data.iloc[header_row_index, :13].apply(lambda x: str(x).strip()).tolist()
-
-        # Verificar si los encabezados coinciden con los requeridos
-        if headers != required_columns:
-            missing_columns = [col for col in required_columns if col not in headers]
-            error_message = f"Error: Faltan las siguientes columnas en 'Resumen RRHH': {', '.join(missing_columns)}"
-            st.error(error_message)
-            log_error_to_s3(error_message, filename)
-            return None  # Retornar None si faltan columnas
-
-        # Tomar los datos debajo de los encabezados
-        data = sheet_data.iloc[header_row_index + 1:, :13]
-        data.columns = headers  # Asignar los encabezados a las columnas
-
-        return data  # Retornar el DataFrame procesado
-    except Exception as e:
-        # Agregar más detalles al mensaje de error
-        error_message = f"Error al validar 'Resumen RRHH': {e}. Traceback: {traceback.format_exc()}"
-        st.error(error_message)
-        log_error_to_s3(error_message, filename)
-        return None  # Retornar None en caso de error
-
-# Validar hojas de colaboradores
-def validate_colaborador_sheet(sheet_data, sheet_name, filename, empresa, tipo_tablero):
-    try:
-        # Detectar la fila que contiene los encabezados
-        header_row_index = None
-        for i in range(len(sheet_data)):
-            row = sheet_data.iloc[i, :].tolist()
-            if "Indicadores de Gestion" in row:
-                header_row_index = i
-                break
-
-        if header_row_index is None:
-            st.error(f"Error: No se encontraron encabezados válidos en la hoja '{sheet_name}'.")
-            return False
-
-        # Validar que el CUIL en la celda B1 sea un número de 11 dígitos
-        cuil = str(sheet_data.iloc[0, 1]).strip()  # Celda B1 corresponde a la fila 0, columna 1
-        cuil = re.sub(r"[^\d]", "", cuil)  # Eliminar cualquier carácter no numérico
-        if not re.fullmatch(r"^\d{11}$", cuil):  # Verificar que sea un número de 11 dígitos
-            error_message = f"Error: El CUIL en la celda B1 de la hoja '{sheet_name}' debe ser un número de 11 dígitos sin guiones, puntos ni letras. Valor encontrado: {cuil}"
-            st.error(error_message)
-            log_error_to_s3(error_message, filename)
-            return False
-
-        # Configurar los encabezados y limpiar espacios
-        sheet_data.columns = sheet_data.iloc[header_row_index].apply(lambda x: str(x).strip())
-        sheet_data = sheet_data.iloc[header_row_index + 1:].reset_index(drop=True)
-
-        # Verificar si la columna "Indicadores de Gestion" existe
-        if "Indicadores de Gestion" not in sheet_data.columns:
-            st.error(f"Error: La columna 'Indicadores de Gestion' no existe en la hoja '{sheet_name}'.")
-            return False
-
-        # Validar indicadores obligatorios
-        required_indicators = ["Q Ventas 0 km", "Q Ventas Usados", "Q Suscripciones"]
-        if empresa == "Autosol" and tipo_tablero == "DIRECTA":
-            required_indicators.append("Tomas Usados")
-        elif empresa == "Autociel":
-            required_indicators.extend([
-                "Mora de Cartera (6 meses móviles)", "NPS", "Días hábiles de cancelación",
-                "Créditos PSA", "Créditos KM"
-            ])
-        if not all(indicator in sheet_data["Indicadores de Gestion"].values for indicator in required_indicators):
-            missing_indicators = [ind for ind in required_indicators if ind not in sheet_data["Indicadores de Gestion"].values]
-            st.error(f"Error en la hoja '{sheet_name}': Faltan los siguientes indicadores: {', '.join(missing_indicators)}")
-            return False
-
-        # Validar formulario específico
-        if not validate_formulario(sheet_data, empresa, tipo_tablero, filename):
-            return False
-
-        return True
-    except Exception as e:
-        error_message = f"Error al validar la hoja '{sheet_name}': {e}"
-        st.error(error_message)
-        log_error_to_s3(error_message, filename)
-        return False
-
-# Validar formulario específico por empresa y tipo
-def validate_formulario(sheet_data, empresa, tipo, filename):
-    try:
-        if empresa == "Autolux":
-            if tipo == "PPAA":
-                expected_headers = ["NPS", "Volumen", "70% adh", "Débito", "Mix Tablero", "T. Acelerador"]
-                header_range = (7, 12)  # H1-M1
-            elif tipo == "DIRECTA":
-                expected_headers = ["SSI", "Rentabilidad", "Tablero", "TOT", "Acelerador"]
-                header_range = (7, 10)  # H1-K1
-        elif empresa == "Autosol":
-            if tipo == "PPAA":
-                expected_headers = ["CEM", "70% adh", "Débito", "Tablero", "T. Acelerador"]
-                header_range = (7, 11)  # H1-K1
-            elif tipo == "DIRECTA":
-                expected_headers = ["CEM", "Rent. Global", "Prom. 0KM", "Tablero", "T. Acelerador"]
-                header_range = (7, 11)  # H1-K1
-        elif empresa == "Autociel":
-            expected_headers = ["Q Tomas", "70% adh", "Débito", "Premio Volumen", "T. Acelerador"]
-            header_range = (7, 11)  # H1-K1
-        else:
-            st.error(f"Empresa desconocida: {empresa}")
-            return False
-
-        # Validar encabezados
-        headers = sheet_data.iloc[0, header_range[0]:header_range[1] + 1].values
-        if not all(expected == actual for expected, actual in zip(expected_headers, headers)):
-            st.error(f"Error en el formulario: Los encabezados no coinciden con los esperados para {empresa} ({tipo}).")
-            return False
-
-        # Validar valores
-        values = sheet_data.iloc[1, header_range[0]:header_range[1] + 1].values
-        if not all(isinstance(value, (int, float)) for value in values):
-            st.error(f"Error en el formulario: Los valores deben ser numéricos.")
-            return False
-
-        return True
-    except Exception as e:
-        st.error(f"Error al validar el formulario: {e}")
-        return False
-
-# Extraer el nombre de la empresa del archivo
-def extract_empresa_from_filename(filename):
-    try:
-        # El nombre de la empresa está después de "Vendedores " y antes del siguiente "+"
-        parts = filename.split('+')
-        if len(parts) > 1 and "Vendedores" in parts[1]:
-            empresa = parts[1].split(' ')[1]  # Extraer la palabra después de "Vendedores"
-            return empresa
-        else:
-            return None
-    except Exception as e:
-        st.error(f"Error al extraer la empresa del nombre del archivo: {e}")
-        return None
-
-def generate_aceleradores_csv(aceleradores_data, original_filename):
-    """
-    Genera un único archivo CSV con los valores de todas las hojas del archivo Excel para tableros de vendedores.
-    """
-    try:
-        # Verificar que el DataFrame no esté vacío
-        if aceleradores_data.empty:
-            st.error("Error: No se encontraron datos para generar el archivo CSV de aceleradores.")
-            return False
-
-        # Generar el nombre del archivo CSV
-        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        csv_filename_aceleradores = f"Aceleradores-{timestamp}_{original_filename.split('.')[0]}.csv"
-
-        # Guardar el CSV en un buffer
-        csv_buffer_aceleradores = BytesIO()
-        aceleradores_data.to_csv(csv_buffer_aceleradores, index=False, encoding="utf-8-sig")
-        csv_buffer_aceleradores.seek(0)
-
-        # Subir el archivo CSV a S3
-        upload_file_to_s3_Aceleradores(csv_buffer_aceleradores, csv_filename_aceleradores, original_filename)
-        return True
-
-    except Exception as e:
-        error_message = f"Error al generar el archivo CSV de aceleradores: {e}. Traceback: {traceback.format_exc()}"
-        st.error(error_message)
-        log_error_to_s3(error_message, original_filename)
-        return False
-
-# Modificar la función process_and_upload_excel para incluir la nueva funcionalidad
+# Función para procesar y subir el Excel
 def process_and_upload_excel(file, original_filename):
     try:
-        # Validar el nombre del archivo
         if not validate_filename(original_filename):
             error_message = "El nombre del archivo no cumple con el formato requerido (dd-mm-aaaa+empresa+nombre lider.xlsx)."
             st.error(error_message)
             log_error_to_s3(error_message, original_filename)
             return
 
-        # Validar la fecha del archivo
         if not validate_file_date(original_filename):
             error_message = "La fecha del nombre del archivo solo puede ser del mes anterior al actual."
             st.error(error_message)
             log_error_to_s3(error_message, original_filename)
             return
 
-        # Leer el archivo Excel
+        is_vendedores = is_vendedores_tablero(original_filename)
         excel_data = pd.ExcelFile(file)
+        argentina_tz = pytz.timezone("America/Argentina/Buenos_Aires")
+        now = datetime.now(argentina_tz)
+        upload_datetime = now.strftime('%Y-%m-%d_%H-%M-%S')
 
-        # Verificar si el archivo es de vendedores
-        if is_vendedores_file(original_filename):
-            # Lógica para tableros de vendedores
-            st.info("Procesando un tablero de vendedores...")
-            aceleradores_data = pd.DataFrame()
-
-            for sheet_name in excel_data.sheet_names:
-                sheet_data = excel_data.parse(sheet_name, header=None)
-
-                # Validar estructura de la hoja
-                if not verify_sheet_structure(sheet_data, sheet_name, original_filename):
-                    st.error(f"Error en la estructura de la hoja '{sheet_name}'. No se procesará el archivo.")
-                    return
-
-                # Extraer datos específicos para vendedores
-                try:
-                    cuil = str(sheet_data.iloc[0, 1]).strip()  # Celda B1
-                    cuil = re.sub(r"[^\d]", "", cuil)
-                    tipo_vendedor = str(sheet_data.iloc[1, 1]).strip()  # Celda B2
-                    indicadores = sheet_data.iloc[1, 7:13].tolist()  # H2 a M2
-
-                    if not re.fullmatch(r"^\d{11}$", cuil):
-                        error_message = f"Error: El CUIL en la celda B1 de la hoja '{sheet_name}' debe ser un número de 11 dígitos."
-                        st.error(error_message)
-                        log_error_to_s3(error_message, original_filename)
-                        continue
-
-                    if not tipo_vendedor:
-                        error_message = f"Error: El Tipo Vendedor en la celda B2 de la hoja '{sheet_name}' está vacío o no es válido."
-                        st.error(error_message)
-                        log_error_to_s3(error_message, original_filename)
-                        continue
-
-                    if len(indicadores) != 6:
-                        st.error(f"Error: No se encontraron exactamente 6 indicadores en las celdas H2 a M2 de la hoja '{sheet_name}'.")
-                        continue
-
-                    if not all(isinstance(ind, (int, float)) or pd.isna(ind) for ind in indicadores):
-                        error_message = f"Error: Los indicadores en las celdas H2 a M2 de la hoja '{sheet_name}' deben ser numéricos o nulos."
-                        st.error(error_message)
-                        log_error_to_s3(error_message, original_filename)
-                        continue
-
-                    # Agregar los datos al DataFrame de aceleradores
-                    aceleradores_data = pd.concat([
-                        aceleradores_data,
-                        pd.DataFrame([{
-                            "CUIL": cuil,
-                            "Tipo Vendedor": tipo_vendedor,
-                            "Indicador 1": indicadores[0],
-                            "Indicador 2": indicadores[1],
-                            "Indicador 3": indicadores[2],
-                            "Indicador 4": indicadores[3],
-                            "Indicador 5": indicadores[4],
-                            "Indicador 6": indicadores[5]
-                        }])
-                    ], ignore_index=True)
-
-                except Exception as e:
-                    error_message = f"Error al procesar la hoja '{sheet_name}': {e}"
-                    st.error(error_message)
-                    log_error_to_s3(error_message, original_filename)
-                    continue
-
-            # Generar el archivo CSV de aceleradores
-            if not aceleradores_data.empty:
-                generate_aceleradores_csv(aceleradores_data, original_filename)
-
-        else:
-            # Lógica para tableros de no vendedores
-            st.info("Procesando un tablero de no vendedores...")
-            argentina_tz = pytz.timezone("America/Argentina/Buenos_Aires")
-            now = datetime.now(argentina_tz)
-            upload_datetime = now.strftime('%d/%m/%Y_%H:%M:%S')
-
-            cleaned_df, success = process_sheets_until_empty(excel_data, original_filename, upload_datetime, is_vendedores=False)
-
-            if not success:
-                error_message = "El archivo contiene errores en su estructura y no se cargará."
-                st.error(error_message)
-                log_error_to_s3(error_message, original_filename)
+        if is_vendedores:
+            # Validar y guardar la hoja "Resumen RRHH"
+            valid_rrhh, resumen_rrhh_data = validate_resumen_rrhh_sheet(excel_data, original_filename)
+            if not valid_rrhh:
                 return
+            save_resumen_rrhh_to_csv(resumen_rrhh_data, original_filename, upload_datetime)
 
-            if cleaned_df.empty:
-                error_message = "El archivo no tiene datos válidos después de la limpieza."
-                st.error(error_message)
-                log_error_to_s3(error_message, original_filename)
-                return
+        # Procesar las hojas del archivo
+        cleaned_df, success = process_sheets_until_empty(excel_data, original_filename, upload_datetime, is_vendedores)
 
-            # Verificar duplicados
-            cuil = cleaned_df['CUIL'].iloc[0]
-            fecha, _ = extract_date_and_sucursal(original_filename)
-            leader_name = cleaned_df['Nombre Lider'].iloc[0]
-            is_duplicate, existing_leader, duplicate_cuil = check_for_duplicates(cuil, fecha, leader_name)
-            if is_duplicate:
-                error_message = f"No se puede subir el archivo porque el líder '{existing_leader}' ya lo subió anteriormente. El CUIL duplicado es '{duplicate_cuil}'."
-                st.error(error_message)
-                log_error_to_s3(error_message, original_filename)
-                return
+        if not success:
+            error_message = "El archivo contiene errores en su estructura y no se cargará"
+            st.error(error_message)
+            log_error_to_s3(error_message, original_filename)
+            return
 
-            # Contar la cantidad de CUILs únicos
-            unique_cuils_count = cleaned_df['CUIL'].nunique()
-            st.info(f"Se subieron {unique_cuils_count} tableros.")
+        if cleaned_df.empty:
+            error_message = "El archivo no tiene datos válidos después de la limpieza."
+            st.error(error_message)
+            log_error_to_s3(error_message, original_filename)
+            return
 
-            # Determinar el tipo de tablero (Ajuste o Normal)
-            upload_datetime_obj = datetime.strptime(upload_datetime, '%d/%m/%Y_%H:%M:%S')
-            tablero_type = determine_tablero_type(fecha, upload_datetime_obj)
-            ajuste_value = "SI" if tablero_type == "Ajuste" else "NO"
-            cleaned_df["Ajuste"] = ajuste_value
+        # Verificar duplicados
+        cuil = cleaned_df['CUIL'].iloc[0]
+        fecha, _ = extract_date_and_sucursal(original_filename)
+        leader_name = cleaned_df['Nombre Lider'].iloc[0]
+        is_duplicate, existing_leader, duplicate_cuil = check_for_duplicates(cuil, fecha, leader_name)
+        if is_duplicate:
+            error_message = f"No se puede subir el archivo porque el líder '{existing_leader}' ya lo subió anteriormente. El CUIL duplicado es '{duplicate_cuil}'."
+            st.error(error_message)
+            log_error_to_s3(error_message, original_filename)
+            return
 
-            if tablero_type == "Ajuste":
-                st.warning("El tablero se va a cargar como ajuste, ¿desea guardarlo igualmente?")
-                guardar = st.button("Guardar")
-                cancelar = st.button("Cancelar")
-                if cancelar:
-                    st.info("El archivo no se guardó.")
-                    return
-                if not guardar:
-                    return
+        # Contar la cantidad de CUILs únicos
+        unique_cuils_count = cleaned_df['CUIL'].nunique()
+        st.info(f"Se subieron {unique_cuils_count} tableros.")
 
-            # Guardar el archivo CSV
-            csv_buffer = BytesIO()
-            cleaned_df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
-            csv_filename = f"{now.strftime('%Y-%m-%d_%H-%M-%S')}_{original_filename.split('.')[0]}.csv"
-            csv_buffer.seek(0)
-            upload_file_to_s3(csv_buffer, csv_filename, original_filename)
-
+        # Guardar el archivo principal en S3
+        csv_buffer = BytesIO()
+        cleaned_df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
+        csv_filename = f"{now.strftime('%Y-%m-%d_%H-%M-%S')}_{original_filename.split('.')[0]}.csv"
+        csv_buffer.seek(0)
+        upload_file_to_s3(csv_buffer, csv_filename, original_filename)
     except Exception as e:
         error_message = f"Error al procesar el archivo Excel: {e}"
+        st.error(error_message)
+        log_error_to_s3(error_message, original_filename)
+
+def is_vendedores_tablero(filename):
+    try:
+        parts = filename.split('+')
+        if len(parts) > 1 and "Vendedores" in parts[1]:
+            return True
+        return False
+    except Exception as e:
+        st.error(f"Error al determinar el tipo de tablero: {e}")
+        return False
+
+def validate_resumen_rrhh_sheet(excel_data, filename):
+    try:
+        if "Resumen RRHH" not in excel_data.sheet_names:
+            error_message = "Error: La hoja 'Resumen RRHH' no está presente en el archivo."
+            st.error(error_message)
+            log_error_to_s3(error_message, filename)
+            return False, None
+
+        # Leer la hoja "Resumen RRHH" y establecer la fila 2 como encabezado
+        resumen_rrhh_data = excel_data.parse("Resumen RRHH", header=1)
+
+        # Limpiar los nombres de las columnas (eliminar espacios en blanco y caracteres invisibles)
+        resumen_rrhh_data.columns = resumen_rrhh_data.columns.str.strip()
+
+        # Validar que las columnas requeridas estén presentes
+        required_columns = [
+            'Sucursal', 'Vendedores', 'CUIT', 'LEGAJO', 'Total Ventas', 'Vta PPAA',
+            'Descuentos PPAA', 'COMISION PPAA', '0km', 'Usados', 'Premio Convencional',
+            'Comision Convencional', 'Total a liquidar'
+        ]
+        missing_columns = [col for col in required_columns if col not in resumen_rrhh_data.columns]
+        if missing_columns:
+            error_message = f"Error: Faltan las siguientes columnas en la hoja 'Resumen RRHH': {', '.join(missing_columns)}"
+            st.error(error_message)
+            log_error_to_s3(error_message, filename)
+            return False, None
+
+        return True, resumen_rrhh_data
+    except Exception as e:
+        error_message = f"Error al validar la hoja 'Resumen RRHH': {e}"
+        st.error(error_message)
+        log_error_to_s3(error_message, filename)
+        return False, None
+
+def process_vendedores_tablero(sheet_data, filename, upload_datetime, sheet_name):
+    try:
+        # Verificar si existe la fila con el encabezado 'Tipo Indicador'
+        header_row = sheet_data[sheet_data.iloc[:, 0] == 'Tipo Indicador'].index
+        if header_row.empty:
+            error_message = f"Error: No se encontró el encabezado 'Tipo Indicador' en la hoja '{sheet_name}'."
+            st.error(error_message)
+            log_error_to_s3(error_message, filename)
+            return pd.DataFrame()
+
+        header_row = header_row[0]
+        rows_to_process = count_rows_until_empty(sheet_data, "Indicadores de Gestion")
+
+        if rows_to_process == 0:
+            error_message = "Error: No se encontraron filas válidas después del encabezado."
+            st.error(error_message)
+            log_error_to_s3(error_message, filename)
+            return pd.DataFrame()
+
+        # Configurar encabezados y recortar filas relevantes
+        sheet_data.columns = sheet_data.iloc[header_row]
+        sheet_data = sheet_data.iloc[header_row + 1:header_row + 1 + rows_to_process].reset_index(drop=True)
+
+        # Validar columnas requeridas
+        valid_columns, missing_columns = validate_required_columns(sheet_data)
+        if not valid_columns:
+            error_message = f"Error: Faltan las siguientes columnas requeridas: {', '.join(missing_columns)}"
+            st.error(error_message)
+            log_error_to_s3(error_message, filename)
+            return pd.DataFrame()
+
+        # Validar ponderaciones
+        if not validate_ponderacion(sheet_data, filename):
+            return pd.DataFrame()
+
+        if not validate_ponderacion_sum(sheet_data, filename, sheet_name):
+            return pd.DataFrame()
+
+        # Agregar columnas adicionales específicas para vendedores
+        sheet_data['CUIL'] = sheet_data.iloc[0, 1] if len(sheet_data) > 0 else None
+        sheet_data['Tipo de Vendedor'] = sheet_data.iloc[1, 1] if len(sheet_data) > 1 else None
+        sheet_data['Fecha Horario Subida'] = upload_datetime
+
+        return sheet_data
+    except Exception as e:
+        error_message = f"Error al procesar el tablero de vendedores: {e}"
+        st.error(error_message)
+        log_error_to_s3(error_message, filename)
+        return pd.DataFrame()
+
+def save_resumen_rrhh_to_csv(resumen_rrhh_data, original_filename, upload_datetime):
+    try:
+        # Filtrar filas no vacías (asegúrate de que al menos una columna requerida tenga datos)
+        resumen_rrhh_data = resumen_rrhh_data.dropna(how='all', subset=[
+            'Sucursal', 'Vendedores', 'CUIT', 'LEGAJO', 'Total Ventas', 'Vta PPAA',
+            'Descuentos PPAA', 'COMISION PPAA', '0km', 'Usados', 'Premio Convencional',
+            'Comision Convencional', 'Total a liquidar'
+        ])
+
+        # Crear el nombre del archivo CSV
+        csv_filename = f"RRHH-{upload_datetime}_{original_filename.split('.')[0]}.csv"
+
+        # Guardar el DataFrame en un archivo CSV
+        csv_buffer = BytesIO()
+        resumen_rrhh_data.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
+        csv_buffer.seek(0)
+
+        # Subir el archivo CSV a S3
+        upload_file_to_s3(csv_buffer, csv_filename, original_filename)
+        st.success(f"Archivo 'Resumen RRHH' guardado como '{csv_filename}'.")
+    except Exception as e:
+        error_message = f"Error al guardar el archivo 'Resumen RRHH': {e}"
         st.error(error_message)
         log_error_to_s3(error_message, original_filename)
 
@@ -803,6 +617,7 @@ def main():
     uploaded_file = st.file_uploader("Selecciona un archivo Excel", type=["xlsx"])
 
     if uploaded_file is not None:
+        # Asegúrate de que esta línea no se ejecute más de una vez
         process_and_upload_excel(uploaded_file, uploaded_file.name)
 
 if __name__ == "__main__":
