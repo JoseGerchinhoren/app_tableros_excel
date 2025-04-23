@@ -115,23 +115,25 @@ def extract_date_and_sucursal(filename):
     except IndexError:
         return None, None
 
-# Verificar celdas del formulario
-def validate_form_cells(sheet_data, sheet_name, filename):
+# Modificar la función validate_form_cells para que no valide CUIL en tableros de no vendedores
+def validate_form_cells(sheet_data, sheet_name, filename, is_vendedores):
     try:
         required_cells = ['B1', 'B2', 'B3', 'B4']
         for cell in required_cells:
-            if pd.isna(sheet_data.at[int(cell[1])-1, 1]):
+            if pd.isna(sheet_data.at[int(cell[1]) - 1, 1]):
                 error_message = f"Error: La celda {cell} en la hoja '{sheet_name}' está vacía."
                 st.error(error_message)
                 log_error_to_s3(error_message, filename)
                 return False
 
-        cuil = str(sheet_data.at[1, 1])
-        if not re.match(r"^\d{11}$", cuil):
-            error_message = f"Error: La celda B2 en la hoja '{sheet_name}' debe contener 11 números."
-            st.error(error_message)
-            log_error_to_s3(error_message, filename)
-            return False
+        # Validar CUIL solo si es un tablero de vendedores
+        if is_vendedores:
+            cuil = str(sheet_data.at[1, 1])
+            if not re.match(r"^\d{11}$", cuil):
+                error_message = f"Error: La celda B2 en la hoja '{sheet_name}' debe contener 11 números."
+                st.error(error_message)
+                log_error_to_s3(error_message, filename)
+                return False
 
         # Validar que los campos de comisiones y horas extra sean números o nulos
         comisiones_accesorias = sheet_data.at[0, 10]
@@ -327,28 +329,36 @@ def validate_unique_cuils(dataframes):
         return False
     return True
 
-# Función para procesar hojas del Excel
-def process_sheets_until_empty(excel_data, filename, upload_datetime):
+# Modificar la función process_sheets_until_empty para pasar el parámetro is_vendedores
+def process_sheets_until_empty(excel_data, filename, upload_datetime, is_vendedores):
     final_data = pd.DataFrame()
     leader_name = extract_leader_name(filename)
     fecha, sucursal = extract_date_and_sucursal(filename)
     dataframes = []
+
     for sheet_name in excel_data.sheet_names:
         sheet_data = excel_data.parse(sheet_name, header=None)
+
+        # Validar estructura de la hoja
         if not verify_sheet_structure(sheet_data, sheet_name, filename):
             return pd.DataFrame(), False  # Return empty DataFrame and error state
-        if not validate_form_cells(sheet_data, sheet_name, filename):
+        if not validate_form_cells(sheet_data, sheet_name, filename, is_vendedores):
             return pd.DataFrame(), False  # Return empty DataFrame and error state
         cargo, cuil, segmento, area_influencia, comisiones_accesorias, hs_extras_50, hs_extras_100, incentivo_productividad, ajuste_incentivo = extract_data_from_form(sheet_data)
-        if cargo and cuil and segmento and area_influencia:
-            processed_data = clean_and_restructure_until_empty(sheet_data, cargo, cuil, segmento, area_influencia, leader_name, fecha, sucursal, filename, upload_datetime, sheet_name, comisiones_accesorias, hs_extras_50, hs_extras_100, incentivo_productividad, ajuste_incentivo)
+
+        if cargo and (not is_vendedores or (is_vendedores and cuil)) and segmento and area_influencia:
+            processed_data = clean_and_restructure_until_empty(
+                sheet_data, cargo, cuil, segmento, area_influencia, leader_name, fecha, sucursal, filename,
+                upload_datetime, sheet_name, comisiones_accesorias, hs_extras_50, hs_extras_100,
+                incentivo_productividad, ajuste_incentivo
+            )
             if processed_data.empty:
                 return pd.DataFrame(), False  # Return empty DataFrame and error state
             if not validate_update_dates(processed_data, filename, sheet_name):
                 return pd.DataFrame(), False  # Return empty DataFrame and error state
             dataframes.append(processed_data)
             final_data = pd.concat([final_data, processed_data], ignore_index=True)
-    
+
     if not validate_unique_cuils(dataframes):
         error_message = "Error: Existen CUILs repetidos en diferentes hojas del archivo."
         st.error(error_message)
@@ -360,7 +370,7 @@ def process_sheets_until_empty(excel_data, filename, upload_datetime):
 # Función para determinar si el tablero es "Ajuste" o "Normal"
 def determine_tablero_type(fecha, upload_datetime):
     fecha_tablero = datetime.strptime(fecha, '%d-%m-%Y')
-    ajuste_fecha = datetime.strptime('22/04/2025', '%d/%m/%Y')  # Ingresar la fecha de ajuste aquí
+    ajuste_fecha = datetime.strptime('24/04/2025', '%d/%m/%Y')  # Ingresar la fecha de ajuste aquí
     if upload_datetime > ajuste_fecha:
         return "Ajuste"
     return "Normal"
@@ -436,7 +446,18 @@ def check_for_duplicates(cuil, fecha, leader_name):
 
 # Función para verificar si el archivo es de vendedores
 def is_vendedores_file(filename):
-    return "Vendedores" in filename
+    """
+    Verifica si el archivo es de vendedores según el nombre del archivo.
+    Un archivo es de vendedores si, después del primer '+', aparece la palabra 'Vendedores'.
+    """
+    try:
+        parts = filename.split('+')
+        if len(parts) > 1 and parts[1].strip().startswith("Vendedores"):
+            return True
+        return False
+    except Exception as e:
+        st.error(f"Error al verificar si el archivo es de vendedores: {e}")
+        return False
 
 # Modificar la función validate_resumen_rrhh
 def validate_resumen_rrhh(sheet_data, filename):
@@ -625,53 +646,46 @@ def generate_aceleradores_csv(aceleradores_data, original_filename):
 # Modificar la función process_and_upload_excel para incluir la nueva funcionalidad
 def process_and_upload_excel(file, original_filename):
     try:
+        # Validar el nombre del archivo
+        if not validate_filename(original_filename):
+            error_message = "El nombre del archivo no cumple con el formato requerido (dd-mm-aaaa+empresa+nombre lider.xlsx)."
+            st.error(error_message)
+            log_error_to_s3(error_message, original_filename)
+            return
+
+        # Validar la fecha del archivo
+        if not validate_file_date(original_filename):
+            error_message = "La fecha del nombre del archivo solo puede ser del mes anterior al actual."
+            st.error(error_message)
+            log_error_to_s3(error_message, original_filename)
+            return
+
         # Leer el archivo Excel
         excel_data = pd.ExcelFile(file)
 
-        # Procesar la hoja "Resumen RRHH" si existe
-        if "Resumen RRHH" in excel_data.sheet_names:
-            resumen_rrhh_data = excel_data.parse("Resumen RRHH", header=None, decimal=",")  # Leer con coma como separador decimal
+        # Verificar si el archivo es de vendedores
+        if is_vendedores_file(original_filename):
+            # Lógica para tableros de vendedores
+            st.info("Procesando un tablero de vendedores...")
+            aceleradores_data = pd.DataFrame()
 
-            # Validar la estructura de la hoja "Resumen RRHH"
-            resumen_rrhh_data = validate_resumen_rrhh(resumen_rrhh_data, original_filename)
-            if resumen_rrhh_data is None:
-                st.error("Error en la hoja 'Resumen RRHH'. No se procesará el archivo.")
-                return  # Detener la ejecución si hay un error
+            for sheet_name in excel_data.sheet_names:
+                sheet_data = excel_data.parse(sheet_name, header=None)
 
-            # Guardar la hoja "Resumen RRHH" como un archivo CSV separado
-            csv_buffer_rrhh = BytesIO()
-            resumen_rrhh_data.to_csv(csv_buffer_rrhh, index=False, encoding="utf-8-sig")  # Guardar sin índices
-            csv_filename_rrhh = f"RRHH-{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_{original_filename.split('.')[0]}.csv"
-            csv_buffer_rrhh.seek(0)
-            upload_file_to_s3_RRHH(csv_buffer_rrhh, csv_filename_rrhh, original_filename)
+                # Validar estructura de la hoja
+                if not verify_sheet_structure(sheet_data, sheet_name, original_filename):
+                    st.error(f"Error en la estructura de la hoja '{sheet_name}'. No se procesará el archivo.")
+                    return
 
-        # Procesar las demás hojas
-        final_data = pd.DataFrame()
-        aceleradores_data = pd.DataFrame()  # DataFrame para almacenar los datos de aceleradores
-
-        for sheet_name in excel_data.sheet_names:
-            if sheet_name == "Resumen RRHH":
-                continue
-
-            # Leer los datos de la hoja
-            sheet_data = excel_data.parse(sheet_name, header=None)
-
-            # Validar estructura de la hoja
-            if not verify_sheet_structure(sheet_data, sheet_name, original_filename):
-                st.error(f"Error en la estructura de la hoja '{sheet_name}'. No se procesará el archivo.")
-                return  # Detener la ejecución si hay un error
-
-            # Verificar si el archivo es de vendedores
-            if is_vendedores_file(original_filename):
-                # Extraer el CUIL, Tipo Vendedor y los indicadores de la hoja
+                # Extraer datos específicos para vendedores
                 try:
-                    cuil = str(sheet_data.iloc[0, 1]).strip()  # Celda B1 corresponde a la fila 0, columna 1
-                    cuil = re.sub(r"[^\d]", "", cuil)  # Eliminar cualquier carácter no numérico
-                    tipo_vendedor = str(sheet_data.iloc[1, 1]).strip()  # Celda B2 corresponde a la fila 1, columna 1
-                    indicadores = sheet_data.iloc[1, 7:13].tolist()  # H2 a M2 corresponden a las columnas 7 a 12 (índice 0)
+                    cuil = str(sheet_data.iloc[0, 1]).strip()  # Celda B1
+                    cuil = re.sub(r"[^\d]", "", cuil)
+                    tipo_vendedor = str(sheet_data.iloc[1, 1]).strip()  # Celda B2
+                    indicadores = sheet_data.iloc[1, 7:13].tolist()  # H2 a M2
 
-                    if not re.fullmatch(r"^\d{11}$", cuil):  # Verificar que sea un número de 11 dígitos
-                        error_message = f"Error: El CUIL en la celda B1 de la hoja '{sheet_name}' debe ser un número de 11 dígitos sin guiones, puntos ni letras. Valor encontrado: {cuil}"
+                    if not re.fullmatch(r"^\d{11}$", cuil):
+                        error_message = f"Error: El CUIL en la celda B1 de la hoja '{sheet_name}' debe ser un número de 11 dígitos."
                         st.error(error_message)
                         log_error_to_s3(error_message, original_filename)
                         continue
@@ -713,40 +727,71 @@ def process_and_upload_excel(file, original_filename):
                     log_error_to_s3(error_message, original_filename)
                     continue
 
-            # Extraer datos del formulario
-            cargo, cuil, segmento, area_influencia, comisiones_accesorias, hs_extras_50, hs_extras_100, incentivo_productividad, ajuste_incentivo = extract_data_from_form(sheet_data)
+            # Generar el archivo CSV de aceleradores
+            if not aceleradores_data.empty:
+                generate_aceleradores_csv(aceleradores_data, original_filename)
 
-            # Limpiar y reestructurar los datos del tablero
-            processed_data = clean_and_restructure_until_empty(
-                sheet_data, cargo, cuil, segmento, area_influencia,
-                extract_leader_name(original_filename),  # Nombre del líder
-                *extract_date_and_sucursal(original_filename),  # Fecha y sucursal
-                original_filename, datetime.now().strftime('%d/%m/%Y_%H:%M:%S'), sheet_name,
-                comisiones_accesorias, hs_extras_50, hs_extras_100, incentivo_productividad, ajuste_incentivo
-            )
+        else:
+            # Lógica para tableros de no vendedores
+            st.info("Procesando un tablero de no vendedores...")
+            argentina_tz = pytz.timezone("America/Argentina/Buenos_Aires")
+            now = datetime.now(argentina_tz)
+            upload_datetime = now.strftime('%d/%m/%Y_%H:%M:%S')
 
-            if processed_data.empty:
-                st.error(f"Error: No se pudieron procesar los datos del tablero en la hoja '{sheet_name}'. No se procesará el archivo.")
-                return  # Detener la ejecución si hay un error
+            cleaned_df, success = process_sheets_until_empty(excel_data, original_filename, upload_datetime, is_vendedores=False)
 
-            # Concatenar los datos procesados
-            final_data = pd.concat([final_data, processed_data], ignore_index=True)
+            if not success:
+                error_message = "El archivo contiene errores en su estructura y no se cargará."
+                st.error(error_message)
+                log_error_to_s3(error_message, original_filename)
+                return
 
-        # Generar el archivo CSV de aceleradores
-        if not aceleradores_data.empty:
-            generate_aceleradores_csv(aceleradores_data, original_filename)
+            if cleaned_df.empty:
+                error_message = "El archivo no tiene datos válidos después de la limpieza."
+                st.error(error_message)
+                log_error_to_s3(error_message, original_filename)
+                return
 
-        # Guardar los datos procesados en un CSV
-        if not final_data.empty:
+            # Verificar duplicados
+            cuil = cleaned_df['CUIL'].iloc[0]
+            fecha, _ = extract_date_and_sucursal(original_filename)
+            leader_name = cleaned_df['Nombre Lider'].iloc[0]
+            is_duplicate, existing_leader, duplicate_cuil = check_for_duplicates(cuil, fecha, leader_name)
+            if is_duplicate:
+                error_message = f"No se puede subir el archivo porque el líder '{existing_leader}' ya lo subió anteriormente. El CUIL duplicado es '{duplicate_cuil}'."
+                st.error(error_message)
+                log_error_to_s3(error_message, original_filename)
+                return
+
+            # Contar la cantidad de CUILs únicos
+            unique_cuils_count = cleaned_df['CUIL'].nunique()
+            st.info(f"Se subieron {unique_cuils_count} tableros.")
+
+            # Determinar el tipo de tablero (Ajuste o Normal)
+            upload_datetime_obj = datetime.strptime(upload_datetime, '%d/%m/%Y_%H:%M:%S')
+            tablero_type = determine_tablero_type(fecha, upload_datetime_obj)
+            ajuste_value = "SI" if tablero_type == "Ajuste" else "NO"
+            cleaned_df["Ajuste"] = ajuste_value
+
+            if tablero_type == "Ajuste":
+                st.warning("El tablero se va a cargar como ajuste, ¿desea guardarlo igualmente?")
+                guardar = st.button("Guardar")
+                cancelar = st.button("Cancelar")
+                if cancelar:
+                    st.info("El archivo no se guardó.")
+                    return
+                if not guardar:
+                    return
+
+            # Guardar el archivo CSV
             csv_buffer = BytesIO()
-            final_data.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
-            csv_filename = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_{original_filename.split('.')[0]}.csv"
+            cleaned_df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
+            csv_filename = f"{now.strftime('%Y-%m-%d_%H-%M-%S')}_{original_filename.split('.')[0]}.csv"
             csv_buffer.seek(0)
             upload_file_to_s3(csv_buffer, csv_filename, original_filename)
 
     except Exception as e:
-        # Manejo de errores
-        error_message = f"Error al procesar el archivo Excel: {e}. Traceback: {traceback.format_exc()}"
+        error_message = f"Error al procesar el archivo Excel: {e}"
         st.error(error_message)
         log_error_to_s3(error_message, original_filename)
 
