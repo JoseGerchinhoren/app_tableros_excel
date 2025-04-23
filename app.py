@@ -22,9 +22,10 @@ s3 = boto3.client(
 def upload_file_to_s3(file, filename, original_filename):
     try:
         s3.upload_fileobj(file, bucket_name, filename)
-        st.success(f"Archivo '{original_filename}' subido exitosamente.")
+        return True
     except Exception as e:
         st.error(f"Error al subir el archivo: {e}")
+        return False
 
 # Función para guardar errores en un archivo log en S3
 def log_error_to_s3(error_message, filename):
@@ -442,12 +443,16 @@ def process_and_upload_excel(file, original_filename):
         now = datetime.now(argentina_tz)
         upload_datetime = now.strftime('%Y-%m-%d_%H-%M-%S')
 
+        # Extraer el nombre del líder desde el nombre del archivo
+        leader_name = extract_leader_name(original_filename)
+
         if is_vendedores:
             # Validar y guardar la hoja "Resumen RRHH"
             valid_rrhh, resumen_rrhh_data = validate_resumen_rrhh_sheet(excel_data, original_filename)
             if not valid_rrhh:
                 return
-            save_resumen_rrhh_to_csv(resumen_rrhh_data, original_filename, upload_datetime)
+            if save_resumen_rrhh_to_csv(resumen_rrhh_data, original_filename, upload_datetime):
+                st.success(f"Archivo 'Resumen RRHH' guardado como 'RRHH-{upload_datetime}_{original_filename.split('.')[0]}.csv'.")
 
         # Procesar las hojas del archivo
         cleaned_df, success = process_sheets_until_empty(excel_data, original_filename, upload_datetime, is_vendedores)
@@ -467,7 +472,6 @@ def process_and_upload_excel(file, original_filename):
         # Verificar duplicados
         cuil = cleaned_df['CUIL'].iloc[0]
         fecha, _ = extract_date_and_sucursal(original_filename)
-        leader_name = cleaned_df['Nombre Lider'].iloc[0]
         is_duplicate, existing_leader, duplicate_cuil = check_for_duplicates(cuil, fecha, leader_name)
         if is_duplicate:
             error_message = f"No se puede subir el archivo porque el líder '{existing_leader}' ya lo subió anteriormente. El CUIL duplicado es '{duplicate_cuil}'."
@@ -477,14 +481,15 @@ def process_and_upload_excel(file, original_filename):
 
         # Contar la cantidad de CUILs únicos
         unique_cuils_count = cleaned_df['CUIL'].nunique()
-        st.info(f"Se subieron {unique_cuils_count} tableros.")
+        st.success(f"Se subieron {unique_cuils_count} tableros.")
 
         # Guardar el archivo principal en S3
         csv_buffer = BytesIO()
         cleaned_df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
         csv_filename = f"{now.strftime('%Y-%m-%d_%H-%M-%S')}_{original_filename.split('.')[0]}.csv"
         csv_buffer.seek(0)
-        upload_file_to_s3(csv_buffer, csv_filename, original_filename)
+        if upload_file_to_s3(csv_buffer, csv_filename, original_filename):
+            st.success(f"Archivo '{original_filename}' subido exitosamente.")
     except Exception as e:
         error_message = f"Error al procesar el archivo Excel: {e}"
         st.error(error_message)
@@ -586,28 +591,22 @@ def process_vendedores_tablero(sheet_data, filename, upload_datetime, sheet_name
 
 def save_resumen_rrhh_to_csv(resumen_rrhh_data, original_filename, upload_datetime):
     try:
-        # Filtrar filas no vacías (asegúrate de que al menos una columna requerida tenga datos)
         resumen_rrhh_data = resumen_rrhh_data.dropna(how='all', subset=[
             'Sucursal', 'Vendedores', 'CUIT', 'LEGAJO', 'Total Ventas', 'Vta PPAA',
             'Descuentos PPAA', 'COMISION PPAA', '0km', 'Usados', 'Premio Convencional',
             'Comision Convencional', 'Total a liquidar'
         ])
 
-        # Crear el nombre del archivo CSV
         csv_filename = f"RRHH-{upload_datetime}_{original_filename.split('.')[0]}.csv"
-
-        # Guardar el DataFrame en un archivo CSV
         csv_buffer = BytesIO()
         resumen_rrhh_data.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
         csv_buffer.seek(0)
 
-        # Subir el archivo CSV a S3
         upload_file_to_s3(csv_buffer, csv_filename, original_filename)
-        st.success(f"Archivo 'Resumen RRHH' guardado como '{csv_filename}'.")
+        return True
     except Exception as e:
-        error_message = f"Error al guardar el archivo 'Resumen RRHH': {e}"
-        st.error(error_message)
-        log_error_to_s3(error_message, original_filename)
+        st.error(f"Error al guardar el archivo 'Resumen RRHH': {e}")
+        return False
 
 # Función principal de la aplicación
 def main():
@@ -617,8 +616,10 @@ def main():
     uploaded_file = st.file_uploader("Selecciona un archivo Excel", type=["xlsx"])
 
     if uploaded_file is not None:
-        # Asegúrate de que esta línea no se ejecute más de una vez
-        process_and_upload_excel(uploaded_file, uploaded_file.name)
+        # Usa una clave única para evitar recargas múltiples
+        if st.session_state.get("uploaded_file") != uploaded_file.name:
+            st.session_state["uploaded_file"] = uploaded_file.name
+            process_and_upload_excel(uploaded_file, uploaded_file.name)
 
 if __name__ == "__main__":
     main()
