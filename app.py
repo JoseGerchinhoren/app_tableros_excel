@@ -35,6 +35,14 @@ def upload_file_to_s3_RRHH(file, filename, original_filename):
     except Exception as e:
         st.error(f"Error al subir el archivo: {e}")
 
+# Función para cargar un archivo en S3
+def upload_file_to_s3_Aceleradores(file, filename, original_filename):
+    try:
+        s3.upload_fileobj(file, bucket_name, filename)
+        st.success(f"Tabla de Aceleradores, del archivo '{original_filename}' subido exitosamente.")
+    except Exception as e:
+        st.error(f"Error al subir el archivo: {e}")
+        
 # Función para guardar errores en un archivo log en S3
 def log_error_to_s3(error_message, filename):
     try:
@@ -585,7 +593,36 @@ def extract_empresa_from_filename(filename):
         st.error(f"Error al extraer la empresa del nombre del archivo: {e}")
         return None
 
-# Modificar la función principal para manejar ambos formatos
+def generate_aceleradores_csv(aceleradores_data, original_filename):
+    """
+    Genera un único archivo CSV con los valores de todas las hojas del archivo Excel para tableros de vendedores.
+    """
+    try:
+        # Verificar que el DataFrame no esté vacío
+        if aceleradores_data.empty:
+            st.error("Error: No se encontraron datos para generar el archivo CSV de aceleradores.")
+            return False
+
+        # Generar el nombre del archivo CSV
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        csv_filename_aceleradores = f"Aceleradores-{timestamp}_{original_filename.split('.')[0]}.csv"
+
+        # Guardar el CSV en un buffer
+        csv_buffer_aceleradores = BytesIO()
+        aceleradores_data.to_csv(csv_buffer_aceleradores, index=False, encoding="utf-8-sig")
+        csv_buffer_aceleradores.seek(0)
+
+        # Subir el archivo CSV a S3
+        upload_file_to_s3_Aceleradores(csv_buffer_aceleradores, csv_filename_aceleradores, original_filename)
+        return True
+
+    except Exception as e:
+        error_message = f"Error al generar el archivo CSV de aceleradores: {e}. Traceback: {traceback.format_exc()}"
+        st.error(error_message)
+        log_error_to_s3(error_message, original_filename)
+        return False
+
+# Modificar la función process_and_upload_excel para incluir la nueva funcionalidad
 def process_and_upload_excel(file, original_filename):
     try:
         # Leer el archivo Excel
@@ -610,6 +647,8 @@ def process_and_upload_excel(file, original_filename):
 
         # Procesar las demás hojas
         final_data = pd.DataFrame()
+        aceleradores_data = pd.DataFrame()  # DataFrame para almacenar los datos de aceleradores
+
         for sheet_name in excel_data.sheet_names:
             if sheet_name == "Resumen RRHH":
                 continue
@@ -622,14 +661,57 @@ def process_and_upload_excel(file, original_filename):
                 st.error(f"Error en la estructura de la hoja '{sheet_name}'. No se procesará el archivo.")
                 return  # Detener la ejecución si hay un error
 
-            # Validar el CUIL en la celda B1
-            cuil = str(sheet_data.iloc[0, 1]).strip()  # Celda B1 corresponde a la fila 0, columna 1
-            cuil = re.sub(r"[^\d]", "", cuil)  # Eliminar cualquier carácter no numérico
-            if not re.fullmatch(r"^\d{11}$", cuil):  # Verificar que sea un número de 11 dígitos
-                error_message = f"Error: El CUIL en la celda B1 de la hoja '{sheet_name}' debe ser un número de 11 dígitos sin guiones, puntos ni letras. Valor encontrado: {cuil}"
-                st.error(error_message)
-                log_error_to_s3(error_message, original_filename)
-                return  # Detener la ejecución si hay un error
+            # Verificar si el archivo es de vendedores
+            if is_vendedores_file(original_filename):
+                # Extraer el CUIL, Tipo Vendedor y los indicadores de la hoja
+                try:
+                    cuil = str(sheet_data.iloc[0, 1]).strip()  # Celda B1 corresponde a la fila 0, columna 1
+                    cuil = re.sub(r"[^\d]", "", cuil)  # Eliminar cualquier carácter no numérico
+                    tipo_vendedor = str(sheet_data.iloc[1, 1]).strip()  # Celda B2 corresponde a la fila 1, columna 1
+                    indicadores = sheet_data.iloc[1, 7:13].tolist()  # H2 a M2 corresponden a las columnas 7 a 12 (índice 0)
+
+                    if not re.fullmatch(r"^\d{11}$", cuil):  # Verificar que sea un número de 11 dígitos
+                        error_message = f"Error: El CUIL en la celda B1 de la hoja '{sheet_name}' debe ser un número de 11 dígitos sin guiones, puntos ni letras. Valor encontrado: {cuil}"
+                        st.error(error_message)
+                        log_error_to_s3(error_message, original_filename)
+                        continue
+
+                    if not tipo_vendedor:
+                        error_message = f"Error: El Tipo Vendedor en la celda B2 de la hoja '{sheet_name}' está vacío o no es válido."
+                        st.error(error_message)
+                        log_error_to_s3(error_message, original_filename)
+                        continue
+
+                    if len(indicadores) != 6:
+                        st.error(f"Error: No se encontraron exactamente 6 indicadores en las celdas H2 a M2 de la hoja '{sheet_name}'.")
+                        continue
+
+                    if not all(isinstance(ind, (int, float)) or pd.isna(ind) for ind in indicadores):
+                        error_message = f"Error: Los indicadores en las celdas H2 a M2 de la hoja '{sheet_name}' deben ser numéricos o nulos."
+                        st.error(error_message)
+                        log_error_to_s3(error_message, original_filename)
+                        continue
+
+                    # Agregar los datos al DataFrame de aceleradores
+                    aceleradores_data = pd.concat([
+                        aceleradores_data,
+                        pd.DataFrame([{
+                            "CUIL": cuil,
+                            "Tipo Vendedor": tipo_vendedor,
+                            "Indicador 1": indicadores[0],
+                            "Indicador 2": indicadores[1],
+                            "Indicador 3": indicadores[2],
+                            "Indicador 4": indicadores[3],
+                            "Indicador 5": indicadores[4],
+                            "Indicador 6": indicadores[5]
+                        }])
+                    ], ignore_index=True)
+
+                except Exception as e:
+                    error_message = f"Error al procesar la hoja '{sheet_name}': {e}"
+                    st.error(error_message)
+                    log_error_to_s3(error_message, original_filename)
+                    continue
 
             # Extraer datos del formulario
             cargo, cuil, segmento, area_influencia, comisiones_accesorias, hs_extras_50, hs_extras_100, incentivo_productividad, ajuste_incentivo = extract_data_from_form(sheet_data)
@@ -649,6 +731,10 @@ def process_and_upload_excel(file, original_filename):
 
             # Concatenar los datos procesados
             final_data = pd.concat([final_data, processed_data], ignore_index=True)
+
+        # Generar el archivo CSV de aceleradores
+        if not aceleradores_data.empty:
+            generate_aceleradores_csv(aceleradores_data, original_filename)
 
         # Guardar los datos procesados en un CSV
         if not final_data.empty:
