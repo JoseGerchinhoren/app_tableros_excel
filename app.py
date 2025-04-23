@@ -292,6 +292,7 @@ def validate_unique_cuils(dataframes):
 # Función para procesar hojas del Excel
 def process_sheets_until_empty(excel_data, filename, upload_datetime, is_vendedores):
     final_data = pd.DataFrame()
+    aceleradores_data = pd.DataFrame()
     leader_name = extract_leader_name(filename)
     fecha, sucursal = extract_date_and_sucursal(filename)
     dataframes = []
@@ -303,25 +304,28 @@ def process_sheets_until_empty(excel_data, filename, upload_datetime, is_vendedo
         if is_vendedores and sheet_name == "Resumen RRHH":
             valid_rrhh, resumen_rrhh_data = validate_resumen_rrhh_sheet(excel_data, filename)
             if not valid_rrhh:
-                return pd.DataFrame(), False  # Return empty DataFrame and error state
+                return pd.DataFrame(), pd.DataFrame(), False  # Return empty DataFrames and error state
             save_resumen_rrhh_to_csv(resumen_rrhh_data, filename, upload_datetime)
             continue  # No procesar más esta hoja
 
         if not verify_sheet_structure(sheet_data, sheet_name, filename):
-            return pd.DataFrame(), False  # Return empty DataFrame and error state
+            return pd.DataFrame(), pd.DataFrame(), False  # Return empty DataFrames and error state
 
         if not validate_form_cells(sheet_data, sheet_name, filename, is_vendedores):
-            return pd.DataFrame(), False  # Return empty DataFrame and error state
+            return pd.DataFrame(), pd.DataFrame(), False  # Return empty DataFrames and error state
 
         if is_vendedores:
-            processed_data = process_vendedores_tablero(sheet_data, filename, upload_datetime, sheet_name)
+            # Procesar hojas de vendedores
+            processed_data, aceleradores_sheet_data = process_vendedores_tablero(sheet_data, filename, upload_datetime, sheet_name)
+            aceleradores_data = pd.concat([aceleradores_data, aceleradores_sheet_data], ignore_index=True)
         else:
+            # Procesar hojas de no vendedores
             cargo, cuil, segmento, area_influencia, comisiones_accesorias, hs_extras_50, hs_extras_100, incentivo_productividad, ajuste_incentivo = extract_data_from_form(sheet_data)
             if not all([cargo, cuil, segmento, area_influencia]):
                 error_message = f"Error: El formulario en la hoja '{sheet_name}' no contiene todos los datos requeridos."
                 st.error(error_message)
                 log_error_to_s3(error_message, filename)
-                return pd.DataFrame(), False
+                return pd.DataFrame(), pd.DataFrame(), False
 
             processed_data = clean_and_restructure_until_empty(
                 sheet_data, cargo, cuil, segmento, area_influencia, leader_name, fecha, sucursal, filename,
@@ -329,21 +333,12 @@ def process_sheets_until_empty(excel_data, filename, upload_datetime, is_vendedo
             )
 
         if processed_data.empty:
-            return pd.DataFrame(), False  # Return empty DataFrame and error state
-
-        if not validate_update_dates(processed_data, filename, sheet_name):
-            return pd.DataFrame(), False  # Return empty DataFrame and error state
+            return pd.DataFrame(), pd.DataFrame(), False  # Return empty DataFrames and error state
 
         dataframes.append(processed_data)
         final_data = pd.concat([final_data, processed_data], ignore_index=True)
 
-    if not validate_unique_cuils(dataframes):
-        error_message = "Error: Existen CUILs repetidos en diferentes hojas del archivo."
-        st.error(error_message)
-        log_error_to_s3(error_message, filename)
-        return pd.DataFrame(), False  # Return empty DataFrame and error state
-
-    return final_data, True  # Return DataFrame and success state
+    return final_data, aceleradores_data, True  # Return DataFrames and success state
 
 # Función para determinar si el tablero es "Ajuste" o "Normal"
 def determine_tablero_type(fecha, upload_datetime):
@@ -443,7 +438,7 @@ def process_and_upload_excel(file, original_filename):
         now = datetime.now(argentina_tz)
         upload_datetime = now.strftime('%Y-%m-%d_%H-%M-%S')
 
-        # Extraer el nombre del líder desde el nombre del archivo
+# Extraer el nombre del líder desde el nombre del archivo
         leader_name = extract_leader_name(original_filename)
 
         if is_vendedores:
@@ -455,7 +450,7 @@ def process_and_upload_excel(file, original_filename):
                 st.success(f"Archivo 'Resumen RRHH' guardado como 'RRHH-{upload_datetime}_{original_filename.split('.')[0]}.csv'.")
 
         # Procesar las hojas del archivo
-        cleaned_df, success = process_sheets_until_empty(excel_data, original_filename, upload_datetime, is_vendedores)
+        cleaned_df, aceleradores_data, success = process_sheets_until_empty(excel_data, original_filename, upload_datetime, is_vendedores)
 
         if not success:
             error_message = "El archivo contiene errores en su estructura y no se cargará"
@@ -463,33 +458,17 @@ def process_and_upload_excel(file, original_filename):
             log_error_to_s3(error_message, original_filename)
             return
 
-        if cleaned_df.empty:
-            error_message = "El archivo no tiene datos válidos después de la limpieza."
-            st.error(error_message)
-            log_error_to_s3(error_message, original_filename)
-            return
+        if not cleaned_df.empty:
+            # Guardar el archivo principal en S3
+            csv_buffer = BytesIO()
+            cleaned_df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
+            csv_filename = f"{now.strftime('%Y-%m-%d_%H-%M-%S')}_{original_filename.split('.')[0]}.csv"
+            csv_buffer.seek(0)
+            if upload_file_to_s3(csv_buffer, csv_filename, original_filename):
+                st.success(f"Archivo '{original_filename}' subido exitosamente.")
 
-        # Verificar duplicados
-        cuil = cleaned_df['CUIL'].iloc[0]
-        fecha, _ = extract_date_and_sucursal(original_filename)
-        is_duplicate, existing_leader, duplicate_cuil = check_for_duplicates(cuil, fecha, leader_name)
-        if is_duplicate:
-            error_message = f"No se puede subir el archivo porque el líder '{existing_leader}' ya lo subió anteriormente. El CUIL duplicado es '{duplicate_cuil}'."
-            st.error(error_message)
-            log_error_to_s3(error_message, original_filename)
-            return
-
-        # Contar la cantidad de CUILs únicos
-        unique_cuils_count = cleaned_df['CUIL'].nunique()
-        st.success(f"Se subieron {unique_cuils_count} tableros.")
-
-        # Guardar el archivo principal en S3
-        csv_buffer = BytesIO()
-        cleaned_df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
-        csv_filename = f"{now.strftime('%Y-%m-%d_%H-%M-%S')}_{original_filename.split('.')[0]}.csv"
-        csv_buffer.seek(0)
-        if upload_file_to_s3(csv_buffer, csv_filename, original_filename):
-            st.success(f"Archivo '{original_filename}' subido exitosamente.")
+        if not aceleradores_data.empty:
+            save_aceleradores_to_csv(aceleradores_data, original_filename, upload_datetime)
     except Exception as e:
         error_message = f"Error al procesar el archivo Excel: {e}"
         st.error(error_message)
@@ -541,17 +520,29 @@ def validate_resumen_rrhh_sheet(excel_data, filename):
 
 def process_vendedores_tablero(sheet_data, filename, upload_datetime, sheet_name):
     try:
-        # Extraer valores de las celdas B1 y B2
+        # Extraer valores de las celdas B1 (CUIL) y H2 a M2 (Indicadores)
         cuil = sheet_data.iloc[0, 1] if len(sheet_data) > 0 else None  # Celda B1
+        indicadores = sheet_data.iloc[1, 7:13].values.tolist()  # Celdas H2 a M2
         cargo = sheet_data.iloc[1, 1] if len(sheet_data) > 1 else None  # Celda B2
+        
+        # Crear un DataFrame para los aceleradores
+        aceleradores_data = pd.DataFrame([{
+            'CUIL': cuil,
+            'Indicador 1': indicadores[0] if len(indicadores) > 0 else None,
+            'Indicador 2': indicadores[1] if len(indicadores) > 1 else None,
+            'Indicador 3': indicadores[2] if len(indicadores) > 2 else None,
+            'Indicador 4': indicadores[3] if len(indicadores) > 3 else None,
+            'Indicador 5': indicadores[4] if len(indicadores) > 4 else None,
+            'Indicador 6': indicadores[5] if len(indicadores) > 5 else None,
+        }])
 
-        # Verificar si existe la fila con el encabezado 'Tipo Indicador'
+        # Procesar el resto de los datos del tablero (funcionalidad existente)
         header_row = sheet_data[sheet_data.iloc[:, 0] == 'Tipo Indicador'].index
         if header_row.empty:
             error_message = f"Error: No se encontró el encabezado 'Tipo Indicador' en la hoja '{sheet_name}'."
             st.error(error_message)
             log_error_to_s3(error_message, filename)
-            return pd.DataFrame()
+            return pd.DataFrame(), aceleradores_data
 
         header_row = header_row[0]
         rows_to_process = count_rows_until_empty(sheet_data, "Indicadores de Gestion")
@@ -560,7 +551,7 @@ def process_vendedores_tablero(sheet_data, filename, upload_datetime, sheet_name
             error_message = "Error: No se encontraron filas válidas después del encabezado."
             st.error(error_message)
             log_error_to_s3(error_message, filename)
-            return pd.DataFrame()
+            return pd.DataFrame(), aceleradores_data
 
         # Configurar encabezados y recortar filas relevantes
         sheet_data.columns = sheet_data.iloc[header_row]
@@ -572,14 +563,14 @@ def process_vendedores_tablero(sheet_data, filename, upload_datetime, sheet_name
             error_message = f"Error: Faltan las siguientes columnas requeridas: {', '.join(missing_columns)}"
             st.error(error_message)
             log_error_to_s3(error_message, filename)
-            return pd.DataFrame()
+            return pd.DataFrame(), aceleradores_data
 
         # Validar ponderaciones
         if not validate_ponderacion(sheet_data, filename):
-            return pd.DataFrame()
+            return pd.DataFrame(), aceleradores_data
 
         if not validate_ponderacion_sum(sheet_data, filename, sheet_name):
-            return pd.DataFrame()
+            return pd.DataFrame(), aceleradores_data
 
         # Extraer datos adicionales del archivo
         fecha, sucursal = extract_date_and_sucursal(filename)
@@ -587,9 +578,9 @@ def process_vendedores_tablero(sheet_data, filename, upload_datetime, sheet_name
 
         # Agregar columnas adicionales específicas para vendedores
         sheet_data['Cargo'] = cargo  # Valor de la celda B2
-        sheet_data['CUIL'] = cuil  # Valor de la celda B1
-        sheet_data['Segmento'] = "Vendedores"  # Puedes ajustar este valor según corresponda
-        sheet_data['Área de influencia'] = ""  # Puedes ajustar este valor según corresponda
+        sheet_data['CUIL'] = cuil  # Celda B1
+        sheet_data['Segmento'] = "Vendedores"
+        sheet_data['Área de influencia'] = ""
         sheet_data['Nombre Lider'] = leader_name
         sheet_data['Fecha_Nombre_Archivo'] = fecha
         sheet_data['Sucursal'] = sucursal
@@ -602,12 +593,12 @@ def process_vendedores_tablero(sheet_data, filename, upload_datetime, sheet_name
             'Objetivo Aceptable (70%)', 'Objetivo Muy Bueno (90%)', 'Objetivo Excelente (120%)',
             'Resultado', '% Logro', 'Calificación', 'Ultima Fecha de Actualización', 'Lider Revisor', 'Comentario'
         ]
-        return sheet_data[desired_columns]
+        return sheet_data[desired_columns], aceleradores_data
     except Exception as e:
         error_message = f"Error al procesar el tablero de vendedores: {e}"
         st.error(error_message)
         log_error_to_s3(error_message, filename)
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
 
 def save_resumen_rrhh_to_csv(resumen_rrhh_data, original_filename, upload_datetime):
     try:
@@ -627,6 +618,24 @@ def save_resumen_rrhh_to_csv(resumen_rrhh_data, original_filename, upload_dateti
     except Exception as e:
         st.error(f"Error al guardar el archivo 'Resumen RRHH': {e}")
         return False
+
+def save_aceleradores_to_csv(aceleradores_data, original_filename, upload_datetime):
+    try:
+        # Crear el nombre del archivo CSV
+        csv_filename = f"Aceleradores-{upload_datetime}_{original_filename.split('.')[0]}.csv"
+
+        # Guardar el DataFrame en un archivo CSV
+        csv_buffer = BytesIO()
+        aceleradores_data.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
+        csv_buffer.seek(0)
+
+        # Subir el archivo CSV a S3
+        upload_file_to_s3(csv_buffer, csv_filename, original_filename)
+        st.success(f"Archivo de aceleradores guardado como '{csv_filename}'.")
+    except Exception as e:
+        error_message = f"Error al guardar el archivo de aceleradores: {e}"
+        st.error(error_message)
+        log_error_to_s3(error_message, original_filename)
 
 # Función principal de la aplicación
 def main():
