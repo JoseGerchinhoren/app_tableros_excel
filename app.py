@@ -541,6 +541,10 @@ def validate_resumen_rrhh_sheet(excel_data, filename):
 
 def process_vendedores_tablero(sheet_data, filename, upload_datetime, sheet_name):
     try:
+        # Extraer valores de las celdas B1 y B2
+        cuil = sheet_data.iloc[0, 1] if len(sheet_data) > 0 else None  # Celda B1
+        cargo = sheet_data.iloc[1, 1] if len(sheet_data) > 1 else None  # Celda B2
+
         # Verificar si existe la fila con el encabezado 'Tipo Indicador'
         header_row = sheet_data[sheet_data.iloc[:, 0] == 'Tipo Indicador'].index
         if header_row.empty:
@@ -577,12 +581,28 @@ def process_vendedores_tablero(sheet_data, filename, upload_datetime, sheet_name
         if not validate_ponderacion_sum(sheet_data, filename, sheet_name):
             return pd.DataFrame()
 
+        # Extraer datos adicionales del archivo
+        fecha, sucursal = extract_date_and_sucursal(filename)
+        leader_name = extract_leader_name(filename)
+
         # Agregar columnas adicionales específicas para vendedores
-        sheet_data['CUIL'] = sheet_data.iloc[0, 1] if len(sheet_data) > 0 else None
-        sheet_data['Tipo de Vendedor'] = sheet_data.iloc[1, 1] if len(sheet_data) > 1 else None
+        sheet_data['Cargo'] = cargo  # Valor de la celda B2
+        sheet_data['CUIL'] = cuil  # Valor de la celda B1
+        sheet_data['Segmento'] = "Vendedores"  # Puedes ajustar este valor según corresponda
+        sheet_data['Área de influencia'] = ""  # Puedes ajustar este valor según corresponda
+        sheet_data['Nombre Lider'] = leader_name
+        sheet_data['Fecha_Nombre_Archivo'] = fecha
+        sheet_data['Sucursal'] = sucursal
         sheet_data['Fecha Horario Subida'] = upload_datetime
 
-        return sheet_data
+        # Reorganizar las columnas en el orden requerido
+        desired_columns = [
+            'Cargo', 'CUIL', 'Segmento', 'Área de influencia', 'Nombre Lider', 'Fecha_Nombre_Archivo', 'Sucursal',
+            'Fecha Horario Subida', 'Tipo Indicador', 'Tipo Dato', 'Indicadores de Gestion', 'Ponderacion',
+            'Objetivo Aceptable (70%)', 'Objetivo Muy Bueno (90%)', 'Objetivo Excelente (120%)',
+            'Resultado', '% Logro', 'Calificación', 'Ultima Fecha de Actualización', 'Lider Revisor', 'Comentario'
+        ]
+        return sheet_data[desired_columns]
     except Exception as e:
         error_message = f"Error al procesar el tablero de vendedores: {e}"
         st.error(error_message)
