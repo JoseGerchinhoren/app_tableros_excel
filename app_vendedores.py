@@ -603,17 +603,29 @@ def process_vendedores_tablero(sheet_data, filename, upload_datetime, sheet_name
 
 def save_resumen_rrhh_to_csv(resumen_rrhh_data, original_filename, upload_datetime):
     try:
+        # Extraer "Lider" y "Fecha" del nombre del archivo
+        parts = original_filename.split('+')
+        fecha = parts[0] if len(parts) > 0 else None
+        lider = parts[-1].replace('.xlsx', '') if len(parts) > 1 else None
+
+        # Limpiar el DataFrame eliminando filas completamente vacías en las columnas requeridas
         resumen_rrhh_data = resumen_rrhh_data.dropna(how='all', subset=[
             'Sucursal', 'Vendedores', 'CUIT', 'LEGAJO', 'Total Ventas', 'Vta PPAA',
             'Descuentos PPAA', 'COMISION PPAA', '0km', 'Usados', 'Premio Convencional',
             'Comision Convencional', 'Total a liquidar'
         ])
 
+        # Agregar las columnas "Lider" y "Fecha" al DataFrame
+        resumen_rrhh_data.insert(0, 'Lider', lider)
+        resumen_rrhh_data.insert(1, 'Fecha', fecha)
+
+        # Crear el nombre del archivo CSV
         csv_filename = f"RRHH-{upload_datetime}_{original_filename.split('.')[0]}.csv"
         csv_buffer = BytesIO()
         resumen_rrhh_data.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
         csv_buffer.seek(0)
 
+        # Subir el archivo CSV a S3
         upload_file_to_s3(csv_buffer, csv_filename, original_filename)
         return True
     except Exception as e:
@@ -622,6 +634,15 @@ def save_resumen_rrhh_to_csv(resumen_rrhh_data, original_filename, upload_dateti
 
 def save_aceleradores_to_csv(aceleradores_data, original_filename, upload_datetime):
     try:
+        # Extraer "Lider" y "Fecha" del nombre del archivo
+        parts = original_filename.split('+')
+        fecha = parts[0] if len(parts) > 0 else None
+        lider = parts[-1].replace('.xlsx', '') if len(parts) > 1 else None
+
+        # Agregar las columnas "Lider" y "Fecha" al DataFrame
+        aceleradores_data.insert(0, 'Lider', lider)
+        aceleradores_data.insert(1, 'Fecha', fecha)
+
         # Crear el nombre del archivo CSV
         csv_filename = f"Aceleradores-{upload_datetime}_{original_filename.split('.')[0]}.csv"
 
@@ -632,7 +653,7 @@ def save_aceleradores_to_csv(aceleradores_data, original_filename, upload_dateti
 
         # Subir el archivo CSV a S3
         upload_file_to_s3(csv_buffer, csv_filename, original_filename)
-        st.success(f"Archivo de aceleradores guardado correctamente'.")
+        st.success(f"Archivo de aceleradores guardado correctamente.")
     except Exception as e:
         error_message = f"Error al guardar el archivo de aceleradores: {e}"
         st.error(error_message)
